@@ -1,8 +1,8 @@
-const { getManifest, getCatalog, getMeta, getStream } = require('stremio-addon-sdk');
+const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const express = require('express');
 const Database = require('./database');
 
-const addon = {
+const manifest = {
   id: 'org.tamilan24.addon',
   version: '1.0.0',
   name: 'Tamilan24 Movies',
@@ -24,7 +24,9 @@ const addon = {
   ]
 };
 
-addon.catalog = async (args) => {
+const builder = new addonBuilder(manifest);
+
+builder.defineCatalogHandler(async (args) => {
   const db = new Database();
   await db.init();
   
@@ -51,16 +53,16 @@ addon.catalog = async (args) => {
       genre: movie.genre ? movie.genre.split(',') : []
     }));
     
-    return { metas };
+    return Promise.resolve({ metas });
   } catch (error) {
     console.error('Catalog error:', error);
-    return { metas: [] };
+    return Promise.resolve({ metas: [] });
   } finally {
     await db.close();
   }
-};
+});
 
-addon.meta = async (args) => {
+builder.defineMetaHandler(async (args) => {
   const db = new Database();
   await db.init();
   
@@ -68,7 +70,7 @@ addon.meta = async (args) => {
     const movie = await db.getMovieById(args.id);
     
     if (!movie) {
-      return { meta: {} };
+        return Promise.resolve({ meta: {} });
     }
     
     const meta = {
@@ -85,16 +87,16 @@ addon.meta = async (args) => {
       language: movie.language || 'Tamil'
     };
     
-    return { meta };
+    return Promise.resolve({ meta });
   } catch (error) {
     console.error('Meta error:', error);
-    return { meta: {} };
+    return Promise.resolve({ meta: {} });
   } finally {
     await db.close();
   }
-};
+});
 
-addon.stream = async (args) => {
+builder.defineStreamHandler(async (args) => {
   const db = new Database();
   await db.init();
   
@@ -108,7 +110,7 @@ addon.stream = async (args) => {
     }
     
     if (!movie || !movie.video_url) {
-      return { streams: [] };
+        return Promise.resolve({ streams: [] });
     }
     
     const streams = [{
@@ -119,16 +121,18 @@ addon.stream = async (args) => {
       }
     }];
     
-    return { streams };
+    return Promise.resolve({ streams });
   } catch (error) {
     console.error('Stream error:', error);
-    return { streams: [] };
+    return Promise.resolve({ streams: [] });
   } finally {
     await db.close();
   }
-};
+});
 
 const app = express();
+const addonInterface = builder.getInterface();
+app.use('/', getRouter(addonInterface));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -137,9 +141,10 @@ app.get('/health', (req, res) => {
 
 // Start the addon server
 const port = process.env.PORT || 7000;
-serveHTTP(addon, { port, app });
+
+app.listen(port, () => {
+    console.log(`Addon running on port ${port}`);
+});
 
 // Publish to Stremio Central (optional)
 // publishToCentral('https://your-addon-url.com/manifest.json');
-
-console.log(`Addon running on port ${port}`);
