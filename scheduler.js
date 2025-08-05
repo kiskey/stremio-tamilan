@@ -1,6 +1,7 @@
-const { runScraper } = require('./scraper');
-const debug = require('debug')('addon:scheduler');
+import { runScraper } from './scraper.js';
+import debug from 'debug';
 
+const log = debug('addon:scheduler');
 const SCRAPE_INTERVAL = process.env.SCRAPE_INTERVAL || 24 * 60 * 60 * 1000; // Default to 24 hours
 
 class ScraperScheduler {
@@ -9,11 +10,11 @@ class ScraperScheduler {
   }
 
   start() {
-    debug('Starting scheduler...');
+    log('Starting scheduler...');
     // Run once immediately, then start the timer
     runScraper().then(() => {
       this.timer = setInterval(runScraper, SCRAPE_INTERVAL);
-      debug(`Scheduler started. Next scrape in ${SCRAPE_INTERVAL / 1000 / 60} minutes.`);
+      log(`Scheduler started. Next scrape in ${SCRAPE_INTERVAL / 1000 / 60} minutes.`);
     });
   }
 
@@ -21,9 +22,9 @@ class ScraperScheduler {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
-      debug('Scheduler stopped.');
+      log('Scheduler stopped.');
     }
   }
 }
 
-module.exports = ScraperScheduler;
+export default ScraperScheduler;
