@@ -142,8 +142,8 @@ app.get('/health', (req, res) => {
 // Start the addon server
 const port = process.env.PORT || 7000;
 
-app.listen(port, () => {
-    console.log(`Addon running on port ${port}`);
+app.listen(port, '0.0.0.0', () => {
+    console.log(`Addon running on http://0.0.0.0:${port}`);
 });
 
 // Publish to Stremio Central (optional)
