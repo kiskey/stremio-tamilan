@@ -1,4 +1,4 @@
-const { serveHTTP, publishToCentral } = require('stremio-addon-sdk');
+const { getManifest, getCatalog, getMeta, getStream } = require('stremio-addon-sdk');
 const express = require('express');
 const Database = require('./database');
 
