@@ -1,6 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const debug = require('debug')('addon:scraper');
+const Database = require('./database');
 
 const baseUrl = 'https://tamilan24.com';
 
@@ -12,21 +13,20 @@ async function scrapeMovies(page = 1) {
     const $ = cheerio.load(data);
     const movies = [];
 
-    $('.item.movies').each((index, element) => {
+    for (const element of $('.item.movies').get()) {
       const title = $(element).find('h3 a').text();
       const poster = $(element).find('.poster img').attr('src');
       const movieUrl = $(element).find('h3 a').attr('href');
-      const year = $(element).find('.metadata span:last-child').text().trim();
-      const rating = $(element).find('.rating').text().trim();
 
-      movies.push({
-        title,
-        poster,
-        movieUrl,
-        year: parseInt(year) || null,
-        rating
-      });
-    });
+      if (movieUrl) {
+        const details = await scrapeMovieDetails(movieUrl);
+        movies.push({
+          title,
+          poster,
+          ...details
+        });
+      }
+    }
 
     debug('Scraped %d movies from page %d', movies.length, page);
     return movies;
@@ -45,8 +45,8 @@ async function scrapeMovieDetails(movieUrl) {
 
     const description = $('.sbox.synp .wp-content p').text().trim();
     const genre = $('.sgeneros a').map((i, el) => $(el).text()).get().join(', ');
-    const videoUrl = $('iframe').attr('src'); // Simplified for this example
-    const imdbId = $('.imdb_r').text().trim(); // Example, might need adjustment
+    const videoUrl = $('iframe').attr('src');
+    const imdbId = $('.imdb_r').text().trim();
 
     const details = {
       description,
@@ -64,4 +64,22 @@ async function scrapeMovieDetails(movieUrl) {
   }
 }
 
-module.exports = { scrapeMovies, scrapeMovieDetails };
+async function runScraper() {
+  debug('Starting scraper...');
+  const db = new Database();
+  await db.init();
+
+  try {
+    const movies = await scrapeMovies();
+    for (const movie of movies) {
+      await db.addMovie(movie);
+    }
+    debug('Scraper finished.');
+  } catch (error) {
+    console.error('Scraper failed:', error);
+  } finally {
+    await db.close();
+  }
+}
+
+module.exports = { runScraper };
