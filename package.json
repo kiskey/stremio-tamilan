@@ -1,16 +1,31 @@
 {
-  "name": "generic-scraper",
+  "name": "tamilan24-stremio-addon",
   "version": "1.0.0",
-  "description": "Scraper for generic videos",
+  "description": "Stremio addon for Tamilan24 with SQLite database and scraper",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "scrape": "node scraper.js"
   },
   "dependencies": {
-    "axios": "^1.7.2",
+    "axios": "^1.6.0",
     "cheerio": "^1.0.0-rc.12",
-    "express": "^4.19.2",
-    "node-schedule": "^2.2.0",
-    "sqlite3": "^5.17.17"
-  }
+    "express": "^4.18.2",
+    "node-cron": "^3.0.2",
+    "sqlite3": "^5.1.6",
+    "stremio-addon-sdk": "^1.6.10"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": [
+    "stremio",
+    "addon",
+    "tamil",
+    "movies",
+    "scraper"
+  ],
+  "author": "Dyad Developer",
+  "license": "MIT"
 }
