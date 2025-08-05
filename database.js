@@ -1,222 +1,102 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const sqlite = require('sqlite-async');
+const debug = require('debug')('addon:database');
 
 class Database {
   constructor() {
-    this.dbPath = process.env.DB_PATH || path.join(__dirname, 'tamilan24.db');
     this.db = null;
   }
 
   async init() {
-    return new Promise((resolve, reject) => {
-      this.db = new sqlite3.Database(this.dbPath, (err) => {
-        if (err) {
-          reject(err);
-        } else {
-          this.createTables()
-            .then(resolve)
-            .catch(reject);
-        }
-      });
-    });
+    try {
+      this.db = await sqlite.open(':memory:');
+      debug('Database initialized in-memory');
+      await this.createTables();
+    } catch (error) {
+      console.error('Database initialization failed:', error);
+      debug('Database initialization failed: %O', error);
+      throw error;
+    }
   }
 
   async createTables() {
-    const createMoviesTable = `
+    const createTableQuery = `
       CREATE TABLE IF NOT EXISTS movies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
+        title TEXT,
         year INTEGER,
-        poster TEXT,
-        description TEXT,
-        rating REAL,
-        genre TEXT,
-        runtime INTEGER,
-        language TEXT,
-        navigation_url TEXT UNIQUE,
-        video_url TEXT,
-        quality TEXT,
         imdb_id TEXT,
         tmdb_id TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        genre TEXT,
+        rating REAL,
+        poster TEXT,
+        description TEXT,
+        video_url TEXT,
+        quality TEXT,
+        runtime INTEGER,
+        language TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `;
+    await this.db.run(createTableQuery);
+    debug('Movies table created or already exists');
+  }
 
-    const createIndexes = [
-      'CREATE INDEX IF NOT EXISTS idx_title ON movies(title)',
-      'CREATE INDEX IF NOT EXISTS idx_year ON movies(year)',
-      'CREATE INDEX IF NOT EXISTS idx_imdb_id ON movies(imdb_id)',
-      'CREATE INDEX IF NOT EXISTS idx_tmdb_id ON movies(tmdb_id)'
+  async addMovie(movie) {
+    const insertQuery = `
+      INSERT INTO movies (title, year, imdb_id, tmdb_id, genre, rating, poster, description, video_url, quality, runtime, language)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    const params = [
+      movie.title,
+      movie.year,
+      movie.imdb_id,
+      movie.tmdb_id,
+      movie.genre,
+      movie.rating,
+      movie.poster,
+      movie.description,
+      movie.video_url,
+      movie.quality,
+      movie.runtime,
+      movie.language
     ];
-
-    return new Promise((resolve, reject) => {
-      this.db.run(createMoviesTable, (err) => {
-        if (err) {
-          reject(err);
-        } else {
-          // Create indexes
-          let completed = 0;
-          const total = createIndexes.length;
-          
-          createIndexes.forEach(indexSql => {
-            this.db.run(indexSql, (err) => {
-              if (err) {
-                reject(err);
-              } else {
-                completed++;
-                if (completed === total) {
-                  resolve();
-                }
-              }
-            });
-          });
-        }
-      });
-    });
+    await this.db.run(insertQuery, params);
+    debug('Added movie: %s', movie.title);
   }
 
-  async insertMovie(movie) {
-    const sql = `
-      INSERT OR REPLACE INTO movies 
-      (title, year, poster, description, rating, genre, runtime, language, 
-       navigation_url, video_url, quality, imdb_id, tmdb_id, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `;
-
-    return new Promise((resolve, reject) => {
-      this.db.run(sql, [
-        movie.title,
-        movie.year,
-        movie.poster,
-        movie.description,
-        movie.rating,
-        movie.genre,
-        movie.runtime,
-        movie.language,
-        movie.navigation_url,
-        movie.video_url,
-        movie.quality,
-        movie.imdb_id,
-        movie.tmdb_id
-      ], function(err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(this.lastID);
-        }
-      });
-    });
+  async getMovies(limit = 100, skip = 0) {
+    const query = 'SELECT * FROM movies ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    const movies = await this.db.all(query, [limit, skip]);
+    debug('Retrieved %d movies (limit: %d, skip: %d)', movies.length, limit, skip);
+    return movies;
   }
 
-  async getMovies(limit = 100, offset = 0) {
-    const sql = `
-      SELECT * FROM movies 
-      WHERE video_url IS NOT NULL 
-      ORDER BY created_at DESC 
-      LIMIT ? OFFSET ?
-    `;
-
-    return new Promise((resolve, reject) => {
-      this.db.all(sql, [limit, offset], (err, rows) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(rows);
-        }
-      });
-    });
-  }
-
-  async searchMovies(query, limit = 100, offset = 0) {
-    const sql = `
-      SELECT * FROM movies 
-      WHERE title LIKE ? AND video_url IS NOT NULL 
-      ORDER BY created_at DESC 
-      LIMIT ? OFFSET ?
-    `;
-
-    return new Promise((resolve, reject) => {
-      this.db.all(sql, [`%${query}%`, limit, offset], (err, rows) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(rows);
-        }
-      });
-    });
+  async searchMovies(searchTerm, limit = 100, skip = 0) {
+    const query = 'SELECT * FROM movies WHERE title LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    const movies = await this.db.all(query, [`%${searchTerm}%`, limit, skip]);
+    debug('Found %d movies for search term "%s"', movies.length, searchTerm);
+    return movies;
   }
 
   async getMovieById(id) {
-    const sql = `SELECT * FROM movies WHERE id = ?`;
-
-    return new Promise((resolve, reject) => {
-      this.db.get(sql, [id], (err, row) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(row);
-        }
-      });
-    });
+    const query = 'SELECT * FROM movies WHERE id = ?';
+    const movie = await this.db.get(query, [id]);
+    debug('Retrieved movie by ID %s: %O', id, movie);
+    return movie;
   }
 
   async getMovieByImdbId(imdbId) {
-    const sql = `SELECT * FROM movies WHERE imdb_id = ?`;
-
-    return new Promise((resolve, reject) => {
-      this.db.get(sql, [imdbId], (err, row) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(row);
-        }
-      });
-    });
-  }
-
-  async getMovieByNavigationUrl(url) {
-    const sql = `SELECT * FROM movies WHERE navigation_url = ?`;
-
-    return new Promise((resolve, reject) => {
-      this.db.get(sql, [url], (err, row) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(row);
-        }
-      });
-    });
-  }
-
-  async clearMovies() {
-    const sql = `DELETE FROM movies`;
-
-    return new Promise((resolve, reject) => {
-      this.db.run(sql, (err) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
+    const query = 'SELECT * FROM movies WHERE imdb_id = ?';
+    const movie = await this.db.get(query, [imdbId]);
+    debug('Retrieved movie by IMDb ID %s: %O', imdbId, movie);
+    return movie;
   }
 
   async close() {
-    return new Promise((resolve, reject) => {
-      if (this.db) {
-        this.db.close((err) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
-          }
-        });
-      } else {
-        resolve();
-      }
-    });
+    if (this.db) {
+      await this.db.close();
+      debug('Database connection closed');
+    }
   }
 }
 
