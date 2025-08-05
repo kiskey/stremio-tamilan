@@ -1,0 +1,32 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  IMAGE_NAME: ghcr.io/your-username/tamilan24-scraper
+  GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build Docker image
+      run: |
+        docker build -t $IMAGE_NAME:latest .
+        echo "Built Docker image: $IMAGE_NAME:latest"
+
+    - name: Login to GitHub Container Registry
+      run: |
+        docker login ghcr.io -u ${{ github.actor }} -p $GHCR_TOKEN
+        echo "Logged in to GitHub Container Registry"
+
+    - name: Push Docker image
+      run: |
+        docker push $IMAGE_NAME:latest
+        echo "Pushed Docker image to GitHub Container Registry"
