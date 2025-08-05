@@ -2,6 +2,7 @@ const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const express = require('express');
 const Database = require('./database');
 const debug = require('debug')('addon:server');
+const ScraperScheduler = require('./scheduler');
 
 const manifest = {
   id: 'org.tamilan24.addon',
@@ -156,13 +157,12 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
-// Start the addon server
+// Start the addon server and scheduler
 const port = process.env.PORT || 7000;
+const scheduler = new ScraperScheduler();
 
 app.listen(port, '0.0.0.0', () => {
   console.log(`Addon running on http://0.0.0.0:${port}`);
   debug(`Addon server started on port ${port}`);
+  scheduler.start();
 });
-
-// Publish to Stremio Central (optional)
-// publishToCentral('https://your-addon-url.com/manifest.json');
