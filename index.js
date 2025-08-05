@@ -1,7 +1,8 @@
 import { addonBuilder, getRouter } from 'stremio-addon-sdk';
 import express from 'express';
 import debug from 'debug';
-import Database from './database.js';
+// R2: Import the singleton database instance.
+import db from './database.js';
 import ScraperScheduler from './scheduler.js';
 
 const log = debug('addon:server');
@@ -30,11 +31,9 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
+// R2: Handlers now use the shared 'db' instance, without creating/closing connections.
 builder.defineCatalogHandler(async (args) => {
   log('Catalog request: %O', args);
-  const db = new Database();
-  await db.init();
-  
   try {
     const limit = 100;
     const skip = parseInt(args.extra.skip) || 0;
@@ -49,15 +48,15 @@ builder.defineCatalogHandler(async (args) => {
     }
     
     const metas = movies.map(movie => ({
-      id: movie.imdb_id || movie.tmdb_id || movie.id.toString(),
+      id: movie.imdb_id || movie.tmdb_id || `t24:${movie.id}`, // Use a prefix to avoid ID collisions
       type: 'movie',
       name: movie.title,
       poster: movie.poster,
       background: movie.poster,
       description: movie.description,
-      releaseInfo: movie.year.toString(),
+      releaseInfo: movie.year ? movie.year.toString() : '',
       imdbRating: movie.rating ? parseFloat(movie.rating).toFixed(1) : null,
-      genre: movie.genre ? movie.genre.split(',') : []
+      genres: movie.genre ? movie.genre.split(',').map(g => g.trim()) : []
     }));
     
     log('Responding with %d metas for catalog request', metas.length);
@@ -66,34 +65,37 @@ builder.defineCatalogHandler(async (args) => {
     console.error('Catalog error:', error);
     log('Error in catalog handler: %O', error);
     return Promise.resolve({ metas: [] });
-  } finally {
-    await db.close();
   }
 });
 
 builder.defineMetaHandler(async (args) => {
   log('Meta request: %O', args);
-  const db = new Database();
-  await db.init();
-  
   try {
-    const movie = await db.getMovieById(args.id);
+    // R2: Use a prefix for internal IDs to distinguish them from imdb_id
+    const id = args.id.startsWith('t24:') ? args.id.replace('t24:', '') : args.id;
+    let movie;
+    
+    if (args.id.startsWith('tt')) {
+      movie = await db.getMovieByImdbId(id);
+    } else {
+      movie = await db.getMovieById(id);
+    }
     
     if (!movie) {
       log('Meta not found for ID: %s', args.id);
-      return Promise.resolve({ meta: {} });
+      return Promise.resolve({ meta: null });
     }
     
     const meta = {
-      id: movie.imdb_id || movie.tmdb_id || movie.id.toString(),
+      id: movie.imdb_id || `t24:${movie.id}`,
       type: 'movie',
       name: movie.title,
       poster: movie.poster,
       background: movie.poster,
       description: movie.description,
-      releaseInfo: movie.year.toString(),
+      releaseInfo: movie.year ? movie.year.toString() : '',
       imdbRating: movie.rating ? parseFloat(movie.rating).toFixed(1) : null,
-      genre: movie.genre ? movie.genre.split(',') : [],
+      genres: movie.genre ? movie.genre.split(',').map(g => g.trim()) : [],
       runtime: movie.runtime ? `${movie.runtime} min` : null,
       language: movie.language || 'Tamil'
     };
@@ -103,26 +105,22 @@ builder.defineMetaHandler(async (args) => {
   } catch (error) {
     console.error('Meta error:', error);
     log('Error in meta handler: %O', error);
-    return Promise.resolve({ meta: {} });
-  } finally {
-    await db.close();
+    return Promise.resolve({ meta: null });
   }
 });
 
 builder.defineStreamHandler(async (args) => {
   log('Stream request: %O', args);
-  const db = new Database();
-  await db.init();
-  
   try {
-    // Handle both direct movie IDs and tt IDs
+    const id = args.id.startsWith('t24:') ? args.id.replace('t24:', '') : args.id;
     let movie;
+
     if (args.id.startsWith('tt')) {
-      log('Fetching stream by IMDb ID: %s', args.id);
-      movie = await db.getMovieByImdbId(args.id);
+      log('Fetching stream by IMDb ID: %s', id);
+      movie = await db.getMovieByImdbId(id);
     } else {
-      log('Fetching stream by internal ID: %s', args.id);
-      movie = await db.getMovieById(args.id);
+      log('Fetching stream by internal ID: %s', id);
+      movie = await db.getMovieById(id);
     }
     
     if (!movie || !movie.video_url) {
@@ -144,8 +142,6 @@ builder.defineStreamHandler(async (args) => {
     console.error('Stream error:', error);
     log('Error in stream handler: %O', error);
     return Promise.resolve({ streams: [] });
-  } finally {
-    await db.close();
   }
 });
 
@@ -153,18 +149,23 @@ const app = express();
 const addonInterface = builder.getInterface();
 app.use('/', getRouter(addonInterface));
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   log('Health check request');
   res.status(200).json({ status: 'ok' });
 });
 
-// Start the addon server and scheduler
 const port = process.env.PORT || 7000;
 const scheduler = new ScraperScheduler();
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`Addon running on http://0.0.0.0:${port}`);
-  log(`Addon server started on port ${port}`);
-  scheduler.start();
+// R2: Initialize the database once before starting the server.
+db.init().then(() => {
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`Addon running on http://0.0.0.0:${port}`);
+    log(`Addon server started on port ${port}`);
+    // Start the scheduler after the DB is ready and the server is listening.
+    scheduler.start();
+  });
+}).catch(err => {
+  console.error('Failed to initialize application dependencies:', err);
+  process.exit(1);
 });
