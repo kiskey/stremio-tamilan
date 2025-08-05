@@ -1,13 +1,14 @@
-const axios = require('axios');
-const cheerio = require('cheerio');
-const debug = require('debug')('addon:scraper');
-const Database = require('./database');
+import axios from 'axios';
+import cheerio from 'cheerio';
+import debug from 'debug';
+import Database from './database.js';
 
+const log = debug('addon:scraper');
 const baseUrl = 'https://tamilan24.com';
 
 async function scrapeMovies(page = 1) {
   const url = `${baseUrl}/movies/page/${page}/`;
-  debug('Scraping movies from URL: %s', url);
+  log('Scraping movies from URL: %s', url);
   try {
     const { data } = await axios.get(url);
     const $ = cheerio.load(data);
@@ -28,17 +29,17 @@ async function scrapeMovies(page = 1) {
       }
     }
 
-    debug('Scraped %d movies from page %d', movies.length, page);
+    log('Scraped %d movies from page %d', movies.length, page);
     return movies;
   } catch (error) {
     console.error(`Error scraping movies from ${url}:`, error);
-    debug('Error scraping movies from %s: %O', url, error);
+    log('Error scraping movies from %s: %O', url, error);
     return [];
   }
 }
 
 async function scrapeMovieDetails(movieUrl) {
-  debug('Scraping movie details from URL: %s', movieUrl);
+  log('Scraping movie details from URL: %s', movieUrl);
   try {
     const { data } = await axios.get(movieUrl);
     const $ = cheerio.load(data);
@@ -55,17 +56,17 @@ async function scrapeMovieDetails(movieUrl) {
       imdb_id: imdbId || null
     };
 
-    debug('Scraped movie details for %s: %O', movieUrl, details);
+    log('Scraped movie details for %s: %O', movieUrl, details);
     return details;
   } catch (error) {
     console.error(`Error scraping movie details from ${movieUrl}:`, error);
-    debug('Error scraping movie details from %s: %O', movieUrl, error);
+    log('Error scraping movie details from %s: %O', movieUrl, error);
     return {};
   }
 }
 
-async function runScraper() {
-  debug('Starting scraper...');
+export async function runScraper() {
+  log('Starting scraper...');
   const db = new Database();
   await db.init();
 
@@ -74,12 +75,10 @@ async function runScraper() {
     for (const movie of movies) {
       await db.addMovie(movie);
     }
-    debug('Scraper finished.');
+    log('Scraper finished.');
   } catch (error) {
     console.error('Scraper failed:', error);
   } finally {
     await db.close();
   }
 }
-
-module.exports = { runScraper };
