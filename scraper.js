@@ -1,7 +1,10 @@
 import axios from 'axios';
-import cheerio from 'cheerio';
+// R1: Changed from `import cheerio from 'cheerio'` to `import * as cheerio from 'cheerio'`.
+// This correctly imports the cheerio module which does not have a default export.
+import * as cheerio from 'cheerio';
 import debug from 'debug';
-import Database from './database.js';
+// R2: Import the singleton database instance.
+import db from './database.js';
 
 const log = debug('addon:scraper');
 const baseUrl = 'https://tamilan24.com';
@@ -47,13 +50,19 @@ async function scrapeMovieDetails(movieUrl) {
     const description = $('.sbox.synp .wp-content p').text().trim();
     const genre = $('.sgeneros a').map((i, el) => $(el).text()).get().join(', ');
     const videoUrl = $('iframe').attr('src');
-    const imdbId = $('.imdb_r').text().trim();
+    // Note: The original scraper looked for .imdb_r, but the site might use different selectors.
+    // This is a potential point of failure if the website structure changes.
+    // For now, keeping original logic.
+    const imdbIdText = $('.imdb_r').text().trim();
+    // A more robust way to get year might be needed, this is also from site structure.
+    const year = new Date().getFullYear(); // Placeholder, as year is not reliably scraped here
 
     const details = {
       description,
       genre,
       video_url: videoUrl,
-      imdb_id: imdbId || null
+      imdb_id: imdbIdText || null,
+      year: year // Add year to details
     };
 
     log('Scraped movie details for %s: %O', movieUrl, details);
@@ -67,18 +76,19 @@ async function scrapeMovieDetails(movieUrl) {
 
 export async function runScraper() {
   log('Starting scraper...');
-  const db = new Database();
-  await db.init();
-
+  // R2: No longer need to instantiate or close the database. It's managed by index.js.
+  // The singleton `db` instance is already initialized.
   try {
     const movies = await scrapeMovies();
     for (const movie of movies) {
-      await db.addMovie(movie);
+      if (movie.title) { // Basic validation
+        await db.addMovie(movie);
+      }
     }
     log('Scraper finished.');
   } catch (error) {
     console.error('Scraper failed:', error);
-  } finally {
-    await db.close();
+    log('Scraper run failed: %O', error);
   }
+  // R2: We no longer close the DB connection here.
 }
