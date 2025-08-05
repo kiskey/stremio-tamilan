@@ -9,12 +9,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const dbPath = path.join(__dirname, 'database.sqlite');
 
+/**
+ * R2: This class is now designed as a singleton. The single instance is exported at the bottom.
+ * This prevents multiple database connections from being opened and closed, improving performance.
+ */
 class Database {
   constructor() {
+    if (Database.instance) {
+      return Database.instance;
+    }
     this.db = null;
+    Database.instance = this;
   }
 
   async init() {
+    if (this.db) {
+      log('Database already initialized.');
+      return;
+    }
     try {
       this.db = await open({
         filename: dbPath,
@@ -72,8 +84,12 @@ class Database {
       movie.language
     ];
     try {
-      await this.db.run(insertQuery, params);
-      log('Added movie: %s', movie.title);
+      const result = await this.db.run(insertQuery, params);
+      if (result.changes > 0) {
+        log('Added movie: %s', movie.title);
+      } else {
+        log('Movie already exists, ignored: %s', movie.title);
+      }
     } catch (error) {
       log('Failed to add movie %s: %O', movie.title, error);
     }
@@ -110,9 +126,12 @@ class Database {
   async close() {
     if (this.db) {
       await this.db.close();
+      this.db = null; // Ensure re-initialization is possible if needed
       log('Database connection closed');
     }
   }
 }
 
-export default Database;
+// R2: Export a single instance of the Database class (singleton pattern).
+const databaseInstance = new Database();
+export default databaseInstance;
