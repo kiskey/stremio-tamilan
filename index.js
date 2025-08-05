@@ -1,4 +1,7 @@
-import { addonBuilder, getRouter } from 'stremio-addon-sdk';
+// R4: Correctly import from the CommonJS 'stremio-addon-sdk' module.
+import sdk from 'stremio-addon-sdk';
+const { addonBuilder, getRouter } = sdk;
+
 import express from 'express';
 import debug from 'debug';
 // R2: Import the singleton database instance.
@@ -48,7 +51,7 @@ builder.defineCatalogHandler(async (args) => {
     }
     
     const metas = movies.map(movie => ({
-      id: movie.imdb_id || movie.tmdb_id || `t24:${movie.id}`, // Use a prefix to avoid ID collisions
+      id: movie.imdb_id || `t24:${movie.id}`, // Use a prefix to avoid ID collisions
       type: 'movie',
       name: movie.title,
       poster: movie.poster,
