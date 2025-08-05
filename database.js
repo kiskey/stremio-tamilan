@@ -1,5 +1,8 @@
 const sqlite = require('sqlite-async');
+const path = require('path');
 const debug = require('debug')('addon:database');
+
+const dbPath = path.join(__dirname, 'database.sqlite');
 
 class Database {
   constructor() {
@@ -8,8 +11,8 @@ class Database {
 
   async init() {
     try {
-      this.db = await sqlite.open(':memory:');
-      debug('Database initialized in-memory');
+      this.db = await sqlite.open(dbPath);
+      debug('Database initialized at %s', dbPath);
       await this.createTables();
     } catch (error) {
       console.error('Database initialization failed:', error);
@@ -22,7 +25,7 @@ class Database {
     const createTableQuery = `
       CREATE TABLE IF NOT EXISTS movies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT,
+        title TEXT UNIQUE,
         year INTEGER,
         imdb_id TEXT,
         tmdb_id TEXT,
@@ -43,7 +46,7 @@ class Database {
 
   async addMovie(movie) {
     const insertQuery = `
-      INSERT INTO movies (title, year, imdb_id, tmdb_id, genre, rating, poster, description, video_url, quality, runtime, language)
+      INSERT OR IGNORE INTO movies (title, year, imdb_id, tmdb_id, genre, rating, poster, description, video_url, quality, runtime, language)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     const params = [
@@ -60,8 +63,12 @@ class Database {
       movie.runtime,
       movie.language
     ];
-    await this.db.run(insertQuery, params);
-    debug('Added movie: %s', movie.title);
+    try {
+      await this.db.run(insertQuery, params);
+      debug('Added movie: %s', movie.title);
+    } catch (error) {
+      debug('Failed to add movie %s: %O', movie.title, error);
+    }
   }
 
   async getMovies(limit = 100, skip = 0) {
