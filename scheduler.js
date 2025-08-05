@@ -1,66 +1,29 @@
-const cron = require('node-cron');
-const { spawn } = require('child_process');
-const path = require('path');
+const { runScraper } = require('./scraper');
+const debug = require('debug')('addon:scheduler');
+
+const SCRAPE_INTERVAL = process.env.SCRAPE_INTERVAL || 24 * 60 * 60 * 1000; // Default to 24 hours
 
 class ScraperScheduler {
   constructor() {
-    // Default schedule: every 6 hours
-    this.schedule = process.env.SCRAPER_SCHEDULE || '0 */6 * * *';
-    this.isRunning = false;
+    this.timer = null;
   }
 
   start() {
-    console.log(`Starting scraper scheduler with schedule: ${this.schedule}`);
-    
-    // Run immediately on startup
-    this.runScraper();
-    
-    // Schedule periodic runs
-    cron.schedule(this.schedule, () => {
-      this.runScraper();
+    debug('Starting scheduler...');
+    // Run once immediately, then start the timer
+    runScraper().then(() => {
+      this.timer = setInterval(runScraper, SCRAPE_INTERVAL);
+      debug(`Scheduler started. Next scrape in ${SCRAPE_INTERVAL / 1000 / 60} minutes.`);
     });
-    
-    console.log('Scheduler started');
   }
 
-  runScraper() {
-    if (this.isRunning) {
-      console.log('Scraper is already running, skipping this run');
-      return;
+  stop() {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+      debug('Scheduler stopped.');
     }
-    
-    this.isRunning = true;
-    console.log('Starting scraper process...');
-    
-    const scraperProcess = spawn('node', [path.join(__dirname, 'scraper.js')], {
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-        SCRAPER_FULL: process.env.SCRAPER_FULL_INITIAL || 'false'
-      }
-    });
-    
-    scraperProcess.on('close', (code) => {
-      this.isRunning = false;
-      console.log(`Scraper process exited with code ${code}`);
-      
-      // Reset SCRAPER_FULL_INITIAL after first run
-      if (process.env.SCRAPER_FULL_INITIAL === 'true') {
-        process.env.SCRAPER_FULL_INITIAL = 'false';
-      }
-    });
-    
-    scraperProcess.on('error', (error) => {
-      this.isRunning = false;
-      console.error('Failed to start scraper process:', error);
-    });
   }
-}
-
-// Start scheduler if called directly
-if (require.main === module) {
-  const scheduler = new ScraperScheduler();
-  scheduler.start();
 }
 
 module.exports = ScraperScheduler;
