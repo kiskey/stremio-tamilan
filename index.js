@@ -3,18 +3,17 @@ const { addonBuilder, getRouter } = sdk;
 import express from 'express';
 import debug from 'debug';
 import db from './database.js';
+import tmdb from './tmdb.js';
 import ScraperScheduler from './scheduler.js';
 
 const log = debug('addon:server');
-
-const manifest = {
+const manifest = { /* ... manifest remains the same ... */ 
   id: 'org.tamilan24.addon',
   version: '1.0.0',
   name: 'Tamilan24 Movies',
   description: 'Tamil movies from Tamilan24',
   logo: 'https://tamilan24.com/themes/tamilan24/assets/images/logo.png',
   background: 'https://tamilan24.com/themes/tamilan24/assets/images/logo.png',
-  // Back to the lean version, as we don't need a meta handler for the main catalog.
   resources: ['catalog', 'stream'],
   types: ['movie'],
   catalogs: [
@@ -32,6 +31,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
+// ... catalogHandler and streamHandler remain the same ...
 builder.defineCatalogHandler(async (args) => {
   log('Catalog request: %O', args);
   try {
@@ -42,11 +42,9 @@ builder.defineCatalogHandler(async (args) => {
     if (args.extra.search) {
       movies = await db.searchMovies(args.extra.search, limit, skip);
     } else {
-      // R32: This function now correctly filters for linked movies at the DB level.
       movies = await db.getMovies(limit, skip);
     }
     
-    // The movies array now only contains items with an imdb_id.
     const metas = movies.map(movie => ({
         id: movie.imdb_id,
         type: 'movie',
@@ -106,34 +104,42 @@ builder.defineStreamHandler(async (args) => {
 });
 
 const app = express();
+// R37 & R38: Add JSON body parser for API endpoints
+app.use(express.json()); 
 const addonInterface = builder.getInterface();
 app.use('/', getRouter(addonInterface));
 
-// R33, R34, R35: Add the new admin dashboard route
 app.get('/admin', async (req, res) => {
   log('Admin dashboard request');
   try {
     const stats = await db.getStats();
     const unlinkedMovies = await db.getUnlinkedMovies();
 
+    // R36, R37, R38: Greatly enhanced HTML with dual-list and JS for interactivity
     const html = `
       <!DOCTYPE html>
       <html lang="en">
       <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Addon Admin Dashboard</title>
+        <meta charset="UTF-8"><title>Addon Admin Dashboard</title>
         <style>
-          body { font-family: Arial, sans-serif; background: #f4f4f4; color: #333; padding: 20px; }
-          .container { max-width: 800px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-          h1, h2 { color: #555; }
-          .stats { display: flex; justify-content: space-around; text-align: center; margin-bottom: 30px; }
-          .stat { padding: 20px; background: #eee; border-radius: 8px; width: 30%; }
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f5; color: #1c1e21; padding: 20px; }
+          .container { max-width: 1200px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          h1, h2 { color: #333; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
+          .stats { display: flex; justify-content: space-around; text-align: center; margin: 20px 0; }
+          .stat { padding: 20px; background: #f7f7f7; border-radius: 8px; width: 30%; border: 1px solid #ddd; }
           .stat h3 { margin: 0; font-size: 2.5em; }
-          .unlinked-container { max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; border-radius: 8px; }
-          table { width: 100%; border-collapse: collapse; }
-          th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
-          th { background: #f0f0f0; }
+          .controls-container { display: flex; align-items: flex-start; gap: 20px; margin-top: 20px; }
+          .list-box { width: 45%; }
+          .list-box h3 { text-align: center; }
+          select[multiple] { width: 100%; height: 300px; border: 1px solid #ddd; border-radius: 4px; padding: 5px; }
+          .shuttle-controls { display: flex; flex-direction: column; justify-content: center; gap: 10px; margin-top: 50px; }
+          button { padding: 8px 12px; cursor: pointer; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; }
+          button:hover { background: #e9e9e9; }
+          #rematchBtn { background-color: #007bff; color: white; font-weight: bold; width: 100%; padding: 10px; margin-top: 10px;}
+          #rematchBtn:hover { background-color: #0056b3; }
+          .manual-link-table { width: 100%; margin-top: 20px; }
+          .manual-link-table td { padding: 4px; }
+          .manual-link-table input { width: 150px; padding: 4px; }
         </style>
       </head>
       <body>
@@ -145,33 +151,91 @@ app.get('/admin', async (req, res) => {
             <div class="stat" style="color: green;"><h3>${stats.linked}</h3><p>Linked (in Catalog)</p></div>
             <div class="stat" style="color: orange;"><h3>${stats.unlinked}</h3><p>Unlinked (Not in Catalog)</p></div>
           </div>
-          <h2>Unlinked Content (imdb_id is NULL)</h2>
-          <div class="unlinked-container">
-            <table>
-              <thead>
-                <tr>
-                  <th>DB ID</th>
-                  <th>Title</th>
-                  <th>Year</th>
-                  <th>Date Scraped</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${unlinkedMovies.map(m => `
-                  <tr>
-                    <td>${m.id}</td>
-                    <td>${m.title}</td>
-                    <td>${m.year}</td>
-                    <td>${m.created_at}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
+          <h2>Unlinked Content Management</h2>
+          <div class="controls-container">
+            <div class="list-box">
+              <h3>Unlinked Items (${unlinkedMovies.length})</h3>
+              <select id="unlinkedList" multiple>
+                ${unlinkedMovies.map(m => `<option value="${m.id}">${m.title} (${m.year})</option>`).join('')}
+              </select>
+            </div>
+            <div class="shuttle-controls">
+              <button onclick="moveItems('unlinkedList', 'rematchList', true)">&gt;&gt;</button>
+              <button onclick="moveItems('unlinkedList', 'rematchList')">&gt;</button>
+              <button onclick="moveItems('rematchList', 'unlinkedList')">&lt;</button>
+              <button onclick="moveItems('rematchList', 'unlinkedList', true)">&lt;&lt;</button>
+            </div>
+            <div class="list-box">
+              <h3>Items to Rematch</h3>
+              <select id="rematchList" multiple></select>
+              <button id="rematchBtn" onclick="rematchSelected()">Rematch Selected</button>
+            </div>
+          </div>
+          <h2>Manual Linking</h2>
+          <div class="manual-link-table">
+            <table>${unlinkedMovies.map(m => `
+              <tr>
+                <td>${m.title} (${m.year})</td>
+                <td><input type="text" id="manualId-${m.id}" placeholder="tt... or tmdb..."></td>
+                <td><button onclick="manualLink(${m.id})">Save</button></td>
+              </tr>`).join('')}
             </table>
           </div>
         </div>
+        <script>
+          function moveItems(fromId, toId, all = false) {
+            const fromList = document.getElementById(fromId);
+            const toList = document.getElementById(toId);
+            const itemsToMove = all ? Array.from(fromList.options) : Array.from(fromList.selectedOptions);
+            itemsToMove.forEach(option => toList.appendChild(option));
+          }
+
+          async function rematchSelected() {
+            const rematchList = document.getElementById('rematchList');
+            const ids = Array.from(rematchList.options).map(opt => opt.value);
+            if (ids.length === 0) {
+              alert('No items selected to rematch.');
+              return;
+            }
+            
+            const btn = document.getElementById('rematchBtn');
+            btn.disabled = true;
+            btn.textContent = 'Rematching...';
+
+            const response = await fetch('/admin/rematch', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ids })
+            });
+            const result = await response.json();
+            alert(\`Rematch complete!\\nSuccess: \${result.success}\\nFailed: \${result.failed}\`);
+            location.reload();
+          }
+
+          async function manualLink(id) {
+            const input = document.getElementById('manualId-' + id);
+            const imdbId = input.value.trim();
+            if (!imdbId) {
+              alert('Please enter an IMDb or TMDB ID.');
+              return;
+            }
+
+            const response = await fetch('/admin/manual-link', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id, imdbId })
+            });
+            const result = await response.json();
+            if (result.success) {
+              alert('Successfully linked!');
+              location.reload();
+            } else {
+              alert('Failed to link: ' + result.error);
+            }
+          }
+        </script>
       </body>
-      </html>
-    `;
+      </html>`;
     res.send(html);
   } catch (error) {
     console.error('Admin dashboard error:', error);
@@ -179,9 +243,59 @@ app.get('/admin', async (req, res) => {
   }
 });
 
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+// R37: New endpoint for batch rematching
+app.post('/admin/rematch', async (req, res) => {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'Invalid ID list provided.' });
+    }
+
+    log(`Rematch request for ${ids.length} items.`);
+    let successCount = 0;
+    const moviesToRematch = await db.getUnlinkedMoviesByIds(ids);
+
+    for (const movie of moviesToRematch) {
+        const tmdbData = await tmdb.searchMovie(movie.title, movie.year);
+        if (tmdbData && tmdbData.external_ids?.imdb_id) {
+            await db.updateMovieMetadata(movie.id, {
+                imdb_id: tmdbData.external_ids.imdb_id,
+                tmdb_id: tmdbData.id,
+                description: tmdbData.overview,
+                rating: tmdbData.vote_average?.toFixed(1),
+                genre: tmdbData.genres?.map(g => g.name).join(', ')
+            });
+            successCount++;
+        }
+    }
+    res.json({ success: successCount, failed: moviesToRematch.length - successCount });
 });
+
+// R38: New endpoint for manual linking
+app.post('/admin/manual-link', async (req, res) => {
+    const { id, imdbId } = req.body;
+    if (!id || !imdbId) {
+        return res.status(400).json({ error: 'Movie ID and IMDb/TMDB ID are required.' });
+    }
+
+    log(`Manual link request for movie ID ${id} with external ID ${imdbId}`);
+    const tmdbData = await tmdb.getMovieDetailsByImdbId(imdbId);
+
+    if (tmdbData && tmdbData.external_ids?.imdb_id) {
+        await db.updateMovieMetadata(id, {
+            imdb_id: tmdbData.external_ids.imdb_id,
+            tmdb_id: tmdbData.id,
+            description: tmdbData.overview,
+            rating: tmdbData.vote_average?.toFixed(1),
+            genre: tmdbData.genres?.map(g => g.name).join(', ')
+        });
+        return res.json({ success: true });
+    } else {
+        return res.status(404).json({ success: false, error: 'Could not find a matching movie on TMDB with that ID.' });
+    }
+});
+
+
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
 const port = process.env.PORT || 7000;
 const scheduler = new ScraperScheduler();
@@ -190,7 +304,6 @@ db.init().then(() => {
   app.listen(port, '0.0.0.0', () => {
     console.log(`Addon running on http://0.0.0.0:${port}`);
     console.log(`Admin dashboard available at http://0.0.0.0:${port}/admin`);
-    log(`Addon server started on port ${port}`);
     scheduler.start();
   });
 }).catch(err => {
