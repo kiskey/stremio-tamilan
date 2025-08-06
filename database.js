@@ -3,11 +3,20 @@ import { open } from 'sqlite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import debug from 'debug';
+import fs from 'fs';
 
 const log = debug('addon:database');
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const dbPath = path.join(__dirname, 'database.sqlite');
+
+// R24 & R25: Use a dedicated data directory for the database.
+// This allows a volume to be mounted to this directory without overwriting the app code.
+const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
+if (!fs.existsSync(dataDir)) {
+  log('Creating data directory at %s', dataDir);
+  fs.mkdirSync(dataDir, { recursive: true });
+}
+const dbPath = path.join(dataDir, 'database.sqlite');
 
 class Database {
   constructor() {
@@ -38,7 +47,6 @@ class Database {
   }
 
   async createTables() {
-    // R12: Normalize the schema. Remove stream-specific info from the movies table.
     const createMoviesTableQuery = `
       CREATE TABLE IF NOT EXISTS movies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,7 +67,6 @@ class Database {
     await this.db.run(createMoviesTableQuery);
     log('Movies table created or already exists');
 
-    // R12: Create a separate table for streams to handle the one-to-many relationship.
     const createStreamsTableQuery = `
       CREATE TABLE IF NOT EXISTS streams (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,16 +83,13 @@ class Database {
     log('Streams table created or already exists');
   }
 
-  // R12 & R14: New "upsert" logic for movies and their streams.
   async addMovieAndStream(movie) {
-    // Step 1: Find or Create the movie entry to get its ID.
     const findMovieQuery = 'SELECT id FROM movies WHERE title = ? AND year = ?';
     let existingMovie = await this.db.get(findMovieQuery, [movie.title, movie.year]);
 
     let movieId;
     if (existingMovie) {
       movieId = existingMovie.id;
-      // Optional: Update movie metadata if it has changed.
       const updateMovieQuery = `
         UPDATE movies 
         SET poster = ?, description = ?, genre = ?, rating = ?, imdb_id = ?
@@ -106,7 +110,6 @@ class Database {
       log('Inserted new movie "%s (%s)". ID: %d', movie.title, movie.year, movieId);
     }
 
-    // Step 2: Add the new stream for this movie, ignoring if it already exists.
     if (movieId && movie.video_url) {
       const streamTitle = `Tamilan24 - ${movie.quality || 'HD'}`;
       const insertStreamQuery = `
@@ -124,38 +127,27 @@ class Database {
 
   async getMovies(limit = 100, skip = 0) {
     const query = 'SELECT * FROM movies ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    const movies = await this.db.all(query, [limit, skip]);
-    log('Retrieved %d movies (limit: %d, skip: %d)', movies.length, limit, skip);
-    return movies;
+    return this.db.all(query, [limit, skip]);
   }
 
   async searchMovies(searchTerm, limit = 100, skip = 0) {
     const query = 'SELECT * FROM movies WHERE title LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    const movies = await this.db.all(query, [`%${searchTerm}%`, limit, skip]);
-    log('Found %d movies for search term "%s"', movies.length, searchTerm);
-    return movies;
+    return this.db.all(query, [`%${searchTerm}%`, limit, skip]);
   }
 
   async getMovieById(id) {
     const query = 'SELECT * FROM movies WHERE id = ?';
-    const movie = await this.db.get(query, [id]);
-    log('Retrieved movie by ID %s: %O', id, movie);
-    return movie;
+    return this.db.get(query, [id]);
   }
 
   async getMovieByImdbId(imdbId) {
     const query = 'SELECT * FROM movies WHERE imdb_id = ?';
-    const movie = await this.db.get(query, [imdbId]);
-    log('Retrieved movie by IMDb ID %s: %O', imdbId, movie);
-    return movie;
+    return this.db.get(query, [imdbId]);
   }
 
-  // R13: New function to get all streams for a movie.
   async getStreamsForMovieId(movieId) {
     const query = 'SELECT * FROM streams WHERE movie_id = ?';
-    const streams = await this.db.all(query, [movieId]);
-    log('Retrieved %d streams for movie ID %d', streams.length, movieId);
-    return streams;
+    return this.db.all(query, [movieId]);
   }
 
   async close() {
