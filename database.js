@@ -80,7 +80,6 @@ class Database {
     await this.db.run(createStreamsTableQuery);
     log('Streams table created or already exists');
 
-    // R31: Add a composite index for sorting to make catalog queries fast.
     const createSortIndexQuery = `
       CREATE INDEX IF NOT EXISTS idx_movies_sort ON movies (year DESC, created_at DESC)
     `;
@@ -132,25 +131,41 @@ class Database {
       const streamResult = await this.db.run(insertStreamQuery, [movieId, streamTitle, movie.video_url, movie.quality]);
       if (streamResult.changes > 0) {
         log('Added new stream for movie ID %d: %s', movieId, movie.video_url);
-      } else {
-        log('Stream already exists for movie ID %d: %s', movieId, movie.video_url);
       }
     }
   }
 
   async getMovies(limit = 100, skip = 0) {
-    const query = 'SELECT * FROM movies ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
+    // R32: Filter directly in the query for efficiency.
+    const query = 'SELECT * FROM movies WHERE imdb_id IS NOT NULL ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
     const movies = await this.db.all(query, [limit, skip]);
-    // Re-add diagnostic logging
-    log('Retrieved %d movies from DB (limit: %d, skip: %d)', movies.length, limit, skip);
+    log('Retrieved %d linked movies from DB (limit: %d, skip: %d)', movies.length, limit, skip);
     return movies;
   }
 
   async searchMovies(searchTerm, limit = 100, skip = 0) {
-    const query = 'SELECT * FROM movies WHERE title LIKE ? ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
+    // R32: Also apply the filter to search results.
+    const query = 'SELECT * FROM movies WHERE title LIKE ? AND imdb_id IS NOT NULL ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
     const movies = await this.db.all(query, [`%${searchTerm}%`, limit, skip]);
-    log('Found %d movies for search term "%s"', movies.length, searchTerm);
+    log('Found %d linked movies for search term "%s"', movies.length, searchTerm);
     return movies;
+  }
+
+  // R34 & R35: New functions for the admin dashboard
+  async getStats() {
+    const query = `
+      SELECT
+        COUNT(*) AS total,
+        COUNT(CASE WHEN imdb_id IS NOT NULL THEN 1 END) AS linked,
+        COUNT(CASE WHEN imdb_id IS NULL THEN 1 END) AS unlinked
+      FROM movies
+    `;
+    return this.db.get(query);
+  }
+
+  async getUnlinkedMovies() {
+    const query = 'SELECT id, title, year, created_at FROM movies WHERE imdb_id IS NULL ORDER BY created_at DESC';
+    return this.db.all(query);
   }
 
   async getMovieById(id) {
