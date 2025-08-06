@@ -7,7 +7,7 @@ This Stremio addon provides Tamil movies from Tamilan.
 - Latest movies from Tamilan
 - Search for movies
 - Movie details (poster, description, genre, rating)
-- Direct video streams
+- Direct video streams with stream aggregation
 
 ## Running the Addon
 
