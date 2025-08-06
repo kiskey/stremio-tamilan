@@ -81,6 +81,13 @@ class Database {
     log('Streams table created or already exists');
   }
 
+  // R30: New efficient function to check for a movie's existence.
+  async movieExists(title, year) {
+    const query = 'SELECT 1 FROM movies WHERE title = ? AND year = ? LIMIT 1';
+    const result = await this.db.get(query, [title, year]);
+    return !!result; // Convert result to boolean (true if exists, false if not)
+  }
+
   async addMovieAndStream(movie) {
     const findMovieQuery = 'SELECT id FROM movies WHERE title = ? AND year = ?';
     let existingMovie = await this.db.get(findMovieQuery, [movie.title, movie.year]);
@@ -126,13 +133,11 @@ class Database {
   }
 
   async getMovies(limit = 100, skip = 0) {
-    // R29: Add secondary sort by year to logically order items from a full scrape.
     const query = 'SELECT * FROM movies ORDER BY created_at DESC, year DESC LIMIT ? OFFSET ?';
     return this.db.all(query, [limit, skip]);
   }
 
   async searchMovies(searchTerm, limit = 100, skip = 0) {
-    // R29: Also apply consistent sorting to search results.
     const query = 'SELECT * FROM movies WHERE title LIKE ? ORDER BY created_at DESC, year DESC LIMIT ? OFFSET ?';
     return this.db.all(query, [`%${searchTerm}%`, limit, skip]);
   }
