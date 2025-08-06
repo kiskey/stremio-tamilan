@@ -14,7 +14,7 @@ const manifest = {
   description: 'Tamil movies from Tamilan24',
   logo: 'https://tamilan24.com/themes/tamilan24/assets/images/logo.png',
   background: 'https://tamilan24.com/themes/tamilan24/assets/images/logo.png',
-  // R21: Remove 'meta' as we now rely on Cinemata via imdb_id
+  // Reverting to the previous state for accurate diagnosis
   resources: ['catalog', 'stream'],
   types: ['movie'],
   catalogs: [
@@ -45,10 +45,22 @@ builder.defineCatalogHandler(async (args) => {
       movies = await db.getMovies(limit, skip);
     }
     
+    // R34: ADDED DIAGNOSTIC LOGGING
+    // This will tell us exactly what's happening before the filter.
+    if (movies && movies.length > 0) {
+      const moviesWithImdbIdCount = movies.filter(m => m.imdb_id).length;
+      log(`DIAGNOSTIC: Retrieved ${movies.length} movies from DB. Found ${moviesWithImdbIdCount} with an imdb_id.`);
+      // Optional: Log the first few raw movie objects to see their state
+      log('DIAGNOSTIC: First 3 movie objects from DB:', JSON.stringify(movies.slice(0, 3), null, 2));
+    } else {
+      log('DIAGNOSTIC: No movies were returned from the database query.');
+    }
+    
+    // This is the original, problematic code we are diagnosing.
     const metas = movies
-      .filter(movie => movie.imdb_id) // R21: Only show movies for which we found an imdb_id
+      .filter(movie => movie.imdb_id)
       .map(movie => ({
-        id: movie.imdb_id, // Use imdb_id directly
+        id: movie.imdb_id,
         type: 'movie',
         name: movie.title,
         poster: movie.poster,
@@ -65,20 +77,16 @@ builder.defineCatalogHandler(async (args) => {
   }
 });
 
-// R21: The meta handler is no longer needed. Stremio will use the imdb_id from the
-// catalog response to fetch metadata from its own sources (Cinemata).
 
 builder.defineStreamHandler(async (args) => {
   log('Stream request: %O', args);
   try {
-    // We get an imdb_id from Stremio now
     const imdbId = args.id;
     let movie;
 
     if (imdbId.startsWith('tt')) {
       movie = await db.getMovieByImdbId(imdbId);
     } else {
-      // Fallback for any old IDs, though this should be rare now
       const id = args.id.startsWith('t24:') ? args.id.replace('t24:', '') : args.id;
       movie = await db.getMovieById(id);
     }
@@ -90,7 +98,7 @@ builder.defineStreamHandler(async (args) => {
     
     const streamsFromDb = await db.getStreamsForMovieId(movie.id);
     
-    if (!streamsFromDb || streamsFromDb.length === 0) {
+    if (!streamsFromDb || !streamsFromDb.length) {
       return Promise.resolve({ streams: [] });
     }
     
