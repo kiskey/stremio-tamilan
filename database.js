@@ -38,7 +38,8 @@ class Database {
   }
 
   async createTables() {
-    const createTableQuery = `
+    // R12: Normalize the schema. Remove stream-specific info from the movies table.
+    const createMoviesTableQuery = `
       CREATE TABLE IF NOT EXISTS movies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT,
@@ -49,62 +50,75 @@ class Database {
         rating REAL,
         poster TEXT,
         description TEXT,
-        video_url TEXT,
-        quality TEXT,
         runtime INTEGER,
         language TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        -- R12: Add a unique constraint on title and year to prevent exact duplicates.
-        -- If a new scrape finds the same title and year, we'll replace the record.
-        -- Note: This is a simple approach for preventing duplicate movie entries.
-        -- True stream aggregation (multiple streams per movie) would require a separate 'streams' table.
         UNIQUE(title, year)
       )
     `;
-    await this.db.run(createTableQuery);
+    await this.db.run(createMoviesTableQuery);
     log('Movies table created or already exists');
+
+    // R12: Create a separate table for streams to handle the one-to-many relationship.
+    const createStreamsTableQuery = `
+      CREATE TABLE IF NOT EXISTS streams (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        movie_id INTEGER,
+        title TEXT,
+        url TEXT,
+        quality TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(movie_id) REFERENCES movies(id) ON DELETE CASCADE,
+        UNIQUE(movie_id, url)
+      )
+    `;
+    await this.db.run(createStreamsTableQuery);
+    log('Streams table created or already exists');
   }
 
-  async addMovie(movie) {
-    // R12: Using INSERT OR REPLACE. If a movie with the same title and year exists,
-    // this will replace the existing row with the new data. This ensures that
-    // we don't have duplicate movie entries for the same title/year.
-    // However, it doesn't aggregate multiple video_urls or other details if they
-    // change across scrapes for the same movie, unless those fields are part of the unique constraint and update.
-    // For true stream aggregation, a separate 'streams' table linked to 'movies' is needed.
-    const insertQuery = `
-      INSERT OR REPLACE INTO movies (title, year, imdb_id, tmdb_id, genre, rating, poster, description, video_url, quality, runtime, language)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-    const params = [
-      movie.title,
-      movie.year,
-      movie.imdb_id,
-      movie.tmdb_id,
-      movie.genre,
-      movie.rating,
-      movie.poster,
-      movie.description,
-      movie.video_url,
-      movie.quality,
-      movie.runtime,
-      movie.language
-    ];
-    try {
-      const result = await this.db.run(insertQuery, params);
-      // The 'changes' property indicates if a row was inserted or replaced.
-      if (result.changes > 0) {
-        if (movie.title) {
-           // Check if it was an insert or replace. This is a heuristic.
-           // A more robust way would involve checking existence before insert/replace.
-           // For simplicity, we log it as added, but know it could be an update.
-           log('Added/Replaced movie: %s (Year: %s)', movie.title, movie.year);
-        }
+  // R12 & R14: New "upsert" logic for movies and their streams.
+  async addMovieAndStream(movie) {
+    // Step 1: Find or Create the movie entry to get its ID.
+    const findMovieQuery = 'SELECT id FROM movies WHERE title = ? AND year = ?';
+    let existingMovie = await this.db.get(findMovieQuery, [movie.title, movie.year]);
+
+    let movieId;
+    if (existingMovie) {
+      movieId = existingMovie.id;
+      // Optional: Update movie metadata if it has changed.
+      const updateMovieQuery = `
+        UPDATE movies 
+        SET poster = ?, description = ?, genre = ?, rating = ?, imdb_id = ?
+        WHERE id = ?
+      `;
+      await this.db.run(updateMovieQuery, [movie.poster, movie.description, movie.genre, movie.rating, movie.imdb_id, movieId]);
+      log('Found existing movie "%s (%s)". ID: %d. Updating metadata.', movie.title, movie.year, movieId);
+    } else {
+      const insertMovieQuery = `
+        INSERT INTO movies (title, year, imdb_id, tmdb_id, genre, rating, poster, description, runtime, language)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      const result = await this.db.run(insertMovieQuery, [
+        movie.title, movie.year, movie.imdb_id, movie.tmdb_id, movie.genre,
+        movie.rating, movie.poster, movie.description, movie.runtime, movie.language
+      ]);
+      movieId = result.lastID;
+      log('Inserted new movie "%s (%s)". ID: %d', movie.title, movie.year, movieId);
+    }
+
+    // Step 2: Add the new stream for this movie, ignoring if it already exists.
+    if (movieId && movie.video_url) {
+      const streamTitle = `Tamilan24 - ${movie.quality || 'HD'}`;
+      const insertStreamQuery = `
+        INSERT OR IGNORE INTO streams (movie_id, title, url, quality)
+        VALUES (?, ?, ?, ?)
+      `;
+      const streamResult = await this.db.run(insertStreamQuery, [movieId, streamTitle, movie.video_url, movie.quality]);
+      if (streamResult.changes > 0) {
+        log('Added new stream for movie ID %d: %s', movieId, movie.video_url);
       } else {
-        log('Movie %s (Year: %s) already exists and no changes were made.', movie.title, movie.year);
+        log('Stream already exists for movie ID %d: %s', movieId, movie.video_url);
       }
-    } catch (error) {
-      log('Failed to add/replace movie %s (Year: %s): %O', movie.title, movie.year, error);
     }
   }
 
@@ -136,10 +150,18 @@ class Database {
     return movie;
   }
 
+  // R13: New function to get all streams for a movie.
+  async getStreamsForMovieId(movieId) {
+    const query = 'SELECT * FROM streams WHERE movie_id = ?';
+    const streams = await this.db.all(query, [movieId]);
+    log('Retrieved %d streams for movie ID %d', streams.length, movieId);
+    return streams;
+  }
+
   async close() {
     if (this.db) {
       await this.db.close();
-      this.db = null; // Ensure re-initialization is possible if needed
+      this.db = null;
       log('Database connection closed');
     }
   }
