@@ -16,7 +16,7 @@ if (!fs.existsSync(dataDir)) {
 const dbPath = path.join(dataDir, 'database.sqlite');
 
 class Database {
-  // ... constructor, init, createTables remain the same ...
+  // ... constructor, init, createTables, movieExists, addMovieAndStream, updateMovieMetadata remain the same ...
   constructor() {
     if (Database.instance) {
       return Database.instance;
@@ -133,7 +133,6 @@ class Database {
     }
   }
   
-  // R37 & R38: New surgical update function
   async updateMovieMetadata(id, { imdb_id, tmdb_id, genre, rating, description, poster }) {
     const query = `
       UPDATE movies 
@@ -151,12 +150,9 @@ class Database {
 
   async getMovies(limit = 100, skip = 0) {
     const query = 'SELECT * FROM movies WHERE imdb_id IS NOT NULL ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
-    const movies = await this.db.all(query, [limit, skip]);
-    log('Retrieved %d linked movies from DB (limit: %d, skip: %d)', movies.length, limit, skip);
-    return movies;
+    return this.db.all(query, [limit, skip]);
   }
   
-  // ... other get functions remain the same ...
   async searchMovies(searchTerm, limit = 100, skip = 0) {
     const query = 'SELECT * FROM movies WHERE title LIKE ? AND imdb_id IS NOT NULL ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
     return this.db.all(query, [`%${searchTerm}%`, limit, skip]);
@@ -167,12 +163,12 @@ class Database {
     return this.db.get(query);
   }
 
-  async getUnlinkedMovies() {
-    const query = 'SELECT id, title, year, created_at FROM movies WHERE imdb_id IS NULL ORDER BY created_at DESC';
-    return this.db.all(query);
+  // R53: Modify to accept limit and skip for pagination.
+  async getUnlinkedMovies(limit = 50, skip = 0) {
+    const query = 'SELECT id, title, year, created_at FROM movies WHERE imdb_id IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    return this.db.all(query, [limit, skip]);
   }
 
-  // R37: New function to get specific unlinked movies for rematching
   async getUnlinkedMoviesByIds(ids) {
     const placeholders = ids.map(() => '?').join(',');
     const query = `SELECT id, title, year FROM movies WHERE id IN (${placeholders}) AND imdb_id IS NULL`;
