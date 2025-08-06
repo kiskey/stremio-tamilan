@@ -9,10 +9,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const dbPath = path.join(__dirname, 'database.sqlite');
 
-/**
- * R2: This class is now designed as a singleton. The single instance is exported at the bottom.
- * This prevents multiple database connections from being opened and closed, improving performance.
- */
 class Database {
   constructor() {
     if (Database.instance) {
@@ -45,7 +41,7 @@ class Database {
     const createTableQuery = `
       CREATE TABLE IF NOT EXISTS movies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT UNIQUE,
+        title TEXT,
         year INTEGER,
         imdb_id TEXT,
         tmdb_id TEXT,
@@ -57,7 +53,12 @@ class Database {
         quality TEXT,
         runtime INTEGER,
         language TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        -- R12: Add a unique constraint on title and year to prevent exact duplicates.
+        -- If a new scrape finds the same title and year, we'll replace the record.
+        -- Note: This is a simple approach for preventing duplicate movie entries.
+        -- True stream aggregation (multiple streams per movie) would require a separate 'streams' table.
+        UNIQUE(title, year)
       )
     `;
     await this.db.run(createTableQuery);
@@ -65,8 +66,14 @@ class Database {
   }
 
   async addMovie(movie) {
+    // R12: Using INSERT OR REPLACE. If a movie with the same title and year exists,
+    // this will replace the existing row with the new data. This ensures that
+    // we don't have duplicate movie entries for the same title/year.
+    // However, it doesn't aggregate multiple video_urls or other details if they
+    // change across scrapes for the same movie, unless those fields are part of the unique constraint and update.
+    // For true stream aggregation, a separate 'streams' table linked to 'movies' is needed.
     const insertQuery = `
-      INSERT OR IGNORE INTO movies (title, year, imdb_id, tmdb_id, genre, rating, poster, description, video_url, quality, runtime, language)
+      INSERT OR REPLACE INTO movies (title, year, imdb_id, tmdb_id, genre, rating, poster, description, video_url, quality, runtime, language)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     const params = [
@@ -85,13 +92,19 @@ class Database {
     ];
     try {
       const result = await this.db.run(insertQuery, params);
+      // The 'changes' property indicates if a row was inserted or replaced.
       if (result.changes > 0) {
-        log('Added movie: %s', movie.title);
+        if (movie.title) {
+           // Check if it was an insert or replace. This is a heuristic.
+           // A more robust way would involve checking existence before insert/replace.
+           // For simplicity, we log it as added, but know it could be an update.
+           log('Added/Replaced movie: %s (Year: %s)', movie.title, movie.year);
+        }
       } else {
-        log('Movie already exists, ignored: %s', movie.title);
+        log('Movie %s (Year: %s) already exists and no changes were made.', movie.title, movie.year);
       }
     } catch (error) {
-      log('Failed to add movie %s: %O', movie.title, error);
+      log('Failed to add/replace movie %s (Year: %s): %O', movie.title, movie.year, error);
     }
   }
 
@@ -132,6 +145,5 @@ class Database {
   }
 }
 
-// R2: Export a single instance of the Database class (singleton pattern).
 const databaseInstance = new Database();
 export default databaseInstance;
