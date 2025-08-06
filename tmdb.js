@@ -6,29 +6,29 @@ const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const TMDB_API_URL = 'https://api.themoviedb.org/3';
 const TIMEOUT = 10000;
 
+const INDIAN_LANGUAGES = ['ta', 'te', 'hi', 'ml', 'kn', 'bn', 'mr', 'pa', 'gu'];
+
 if (!TMDB_API_KEY) {
   log('Warning: TMDB_API_KEY environment variable not set. Metadata lookups will be skipped.');
 }
 
 class TmdbProvider {
-  // R45: Add a title sanitization step to improve match rate.
   #sanitizeTitle(title) {
-    // Replaces underscores with spaces and removes excess whitespace.
     return title.replace(/_/g, ' ').trim();
   }
 
   async #search(params) {
-    if (!TMDB_API_KEY) return null;
+    if (!TMDB_API_KEY) return [];
     try {
       const { data } = await axios.get(`${TMDB_API_URL}/search/movie`, {
         params: { api_key: TMDB_API_KEY, ...params },
         timeout: TIMEOUT
       });
-      return data.results && data.results.length > 0 ? data.results[0] : null;
+      return data.results || [];
     } catch (error) {
       log('Error during TMDB search for params %o. Message: %s', params, error.message);
       if (error.response) { log('TMDB API Error Response: %o', error.response.data); }
-      return null;
+      return [];
     }
   }
 
@@ -41,31 +41,67 @@ class TmdbProvider {
       });
       return data;
     } catch (error) {
-      log('Error getting TMDB movie details for id %s. Message: %s', tmdbId, error.message);
+      log('Error getting TMDB movie details for id %s: %O', tmdbId, error.message);
       if (error.response) { log('TMDB API Error Response: %o', error.response.data); }
       return null;
     }
   }
 
+  // R48: Completely overhauled search logic to include year in local filtering.
   async searchMovie(title, year) {
     if (!TMDB_API_KEY) return null;
     
     const sanitizedTitle = this.#sanitizeTitle(title);
     log('Searching TMDB for sanitized title: "%s" (original: "%s"), year: %s', sanitizedTitle, title, year);
     
-    let result = await this.#search({ query: sanitizedTitle, year: year, region: 'IN' });
-    if (result) return this.#getMovieDetails(result.id);
+    // Step 1: Gather all possible candidates from the API, biasing towards the year.
+    const resultsByYearIN = await this.#search({ query: sanitizedTitle, year: year, region: 'IN' });
+    const resultsByYear = await this.#search({ query: sanitizedTitle, year: year });
+    const resultsGlobal = await this.#search({ query: sanitizedTitle });
+
+    // Combine results and create a unique set based on TMDB ID to avoid duplicates.
+    const allResults = [...resultsByYearIN, ...resultsByYear, ...resultsGlobal];
+    const uniqueResults = [...new Map(allResults.map(item => [item.id, item])).values()];
     
-    result = await this.#search({ query: sanitizedTitle, region: 'IN' });
-    if (result) return this.#getMovieDetails(result.id);
+    if (uniqueResults.length === 0) {
+        log('No TMDB match found for: %s (%s)', sanitizedTitle, year);
+        return null;
+    }
+
+    const lowerCaseTitle = sanitizedTitle.toLowerCase();
+
+    // Step 2: Apply our strict, tiered filtering logic locally.
+    const getYearFromResult = (result) => result.release_date ? new Date(result.release_date).getFullYear() : null;
+
+    // Tier 1: Exact Title + Exact Year + Indian Language
+    let bestMatch = uniqueResults.find(r => 
+      r.title.toLowerCase() === lowerCaseTitle &&
+      getYearFromResult(r) === year &&
+      INDIAN_LANGUAGES.includes(r.original_language)
+    );
+    if (bestMatch) {
+      log('Found best match on Tier 1 (Exact Title + Year + Indian Language): %s', bestMatch.title);
+      return this.#getMovieDetails(bestMatch.id);
+    }
     
-    result = await this.#search({ query: sanitizedTitle, year: year });
-    if (result) return this.#getMovieDetails(result.id);
+    // Tier 2: Exact Title + Exact Year + Any Language
+    bestMatch = uniqueResults.find(r => 
+      r.title.toLowerCase() === lowerCaseTitle &&
+      getYearFromResult(r) === year
+    );
+    if (bestMatch) {
+      log('Found best match on Tier 2 (Exact Title + Year + Any Language): %s', bestMatch.title);
+      return this.#getMovieDetails(bestMatch.id);
+    }
     
-    result = await this.#search({ query: sanitizedTitle });
-    if (result) return this.#getMovieDetails(result.id);
-    
-    log('No TMDB match found for: %s (%s)', sanitizedTitle, year);
+    // Tier 3: Fallback to the very first result from the original combined list (respecting API bias).
+    const fallbackResult = allResults[0];
+    if (fallbackResult) {
+        log('No exact match found. Falling back to API top result: %s', fallbackResult.title);
+        return this.#getMovieDetails(fallbackResult.id);
+    }
+
+    log('No TMDB match found after filtering for: %s (%s)', sanitizedTitle, year);
     return null;
   }
 
@@ -81,7 +117,8 @@ class TmdbProvider {
         return this.#getMovieDetails(data.movie_results[0].id);
       }
       return null;
-    } catch (error) {
+    } catch (error)
+    {
       log('Error finding by IMDb ID %s. Message: %s', imdbId, error.message);
       if (error.response) { log('TMDB API Error Response: %o', error.response.data); }
       return null;
