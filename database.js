@@ -11,12 +11,12 @@ const __dirname = path.dirname(__filename);
 
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) {
-  log('Creating data directory at %s', dataDir);
   fs.mkdirSync(dataDir, { recursive: true });
 }
 const dbPath = path.join(dataDir, 'database.sqlite');
 
 class Database {
+  // ... constructor, init, createTables remain the same ...
   constructor() {
     if (Database.instance) {
       return Database.instance;
@@ -27,7 +27,6 @@ class Database {
 
   async init() {
     if (this.db) {
-      log('Database already initialized.');
       return;
     }
     try {
@@ -39,7 +38,6 @@ class Database {
       await this.createTables();
     } catch (error) {
       console.error('Database initialization failed:', error);
-      log('Database initialization failed: %O', error);
       throw error;
     }
   }
@@ -100,14 +98,14 @@ class Database {
     let movieId;
     if (existingMovie) {
       movieId = existingMovie.id;
-      const updateMovieQuery = `
-        UPDATE movies 
-        SET poster = ?, description = ?, genre = ?, rating = ?, imdb_id = ?, tmdb_id = ?
-        WHERE id = ?
-      `;
-      await this.db.run(updateMovieQuery, [
-        movie.poster, movie.description, movie.genre, movie.rating, movie.imdb_id, movie.tmdb_id, movieId
-      ]);
+      await this.updateMovieMetadata(movieId, {
+          poster: movie.poster,
+          description: movie.description,
+          genre: movie.genre,
+          rating: movie.rating,
+          imdb_id: movie.imdb_id,
+          tmdb_id: movie.tmdb_id
+      });
       log('Found existing movie "%s (%s)". ID: %d. Updating metadata.', movie.title, movie.year, movieId);
     } else {
       const insertMovieQuery = `
@@ -134,38 +132,51 @@ class Database {
       }
     }
   }
+  
+  // R37 & R38: New surgical update function
+  async updateMovieMetadata(id, { imdb_id, tmdb_id, genre, rating, description, poster }) {
+    const query = `
+      UPDATE movies 
+      SET 
+        imdb_id = COALESCE(?, imdb_id),
+        tmdb_id = COALESCE(?, tmdb_id),
+        genre = COALESCE(?, genre),
+        rating = COALESCE(?, rating),
+        description = COALESCE(?, description),
+        poster = COALESCE(?, poster)
+      WHERE id = ?
+    `;
+    return this.db.run(query, [imdb_id, tmdb_id, genre, rating, description, poster, id]);
+  }
 
   async getMovies(limit = 100, skip = 0) {
-    // R32: Filter directly in the query for efficiency.
     const query = 'SELECT * FROM movies WHERE imdb_id IS NOT NULL ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
     const movies = await this.db.all(query, [limit, skip]);
     log('Retrieved %d linked movies from DB (limit: %d, skip: %d)', movies.length, limit, skip);
     return movies;
   }
-
+  
+  // ... other get functions remain the same ...
   async searchMovies(searchTerm, limit = 100, skip = 0) {
-    // R32: Also apply the filter to search results.
     const query = 'SELECT * FROM movies WHERE title LIKE ? AND imdb_id IS NOT NULL ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
-    const movies = await this.db.all(query, [`%${searchTerm}%`, limit, skip]);
-    log('Found %d linked movies for search term "%s"', movies.length, searchTerm);
-    return movies;
+    return this.db.all(query, [`%${searchTerm}%`, limit, skip]);
   }
 
-  // R34 & R35: New functions for the admin dashboard
   async getStats() {
-    const query = `
-      SELECT
-        COUNT(*) AS total,
-        COUNT(CASE WHEN imdb_id IS NOT NULL THEN 1 END) AS linked,
-        COUNT(CASE WHEN imdb_id IS NULL THEN 1 END) AS unlinked
-      FROM movies
-    `;
+    const query = `SELECT COUNT(*) AS total, COUNT(imdb_id) AS linked, (COUNT(*) - COUNT(imdb_id)) as unlinked FROM movies`;
     return this.db.get(query);
   }
 
   async getUnlinkedMovies() {
     const query = 'SELECT id, title, year, created_at FROM movies WHERE imdb_id IS NULL ORDER BY created_at DESC';
     return this.db.all(query);
+  }
+
+  // R37: New function to get specific unlinked movies for rematching
+  async getUnlinkedMoviesByIds(ids) {
+    const placeholders = ids.map(() => '?').join(',');
+    const query = `SELECT id, title, year FROM movies WHERE id IN (${placeholders}) AND imdb_id IS NULL`;
+    return this.db.all(query, ids);
   }
 
   async getMovieById(id) {
@@ -182,12 +193,11 @@ class Database {
     const query = 'SELECT * FROM streams WHERE movie_id = ?';
     return this.db.all(query, [movieId]);
   }
-
+  
   async close() {
     if (this.db) {
       await this.db.close();
       this.db = null;
-      log('Database connection closed');
     }
   }
 }
