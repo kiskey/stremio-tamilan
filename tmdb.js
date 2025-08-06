@@ -1,129 +1,132 @@
 import axios from 'axios';
 import debug from 'debug';
-
 const log = debug('addon:tmdb');
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const TMDB_API_URL = 'https://api.themoviedb.org/3';
 const TIMEOUT = 10000;
-
 const INDIAN_LANGUAGES = ['ta', 'te', 'hi', 'ml', 'kn', 'bn', 'mr', 'pa', 'gu'];
-
 if (!TMDB_API_KEY) {
-  log('Warning: TMDB_API_KEY environment variable not set. Metadata lookups will be skipped.');
+log('Warning: TMDB_API_KEY environment variable not set. Metadata lookups will be skipped.');
 }
-
 class TmdbProvider {
-  #sanitizeTitle(title) {
-    return title.replace(/_/g, ' ').trim();
-  }
+#sanitizeTitle(title) {
+return title.replace(/_/g, ' ').trim();
+}
+async #search(params) {
+if (!TMDB_API_KEY) return [];
+try {
+const { data } = await axios.get(${TMDB_API_URL}/search/movie, {
+params: { api_key: TMDB_API_KEY, ...params },
+timeout: TIMEOUT
+});
+return data.results || [];
+} catch (error) {
+log('Error during TMDB search for params %o. Message: %s', params, error.message);
+if (error.response) { log('TMDB API Error Response: %o', error.response.data); }
+return [];
+}
+}
+async #getAndValidateMovieDetails(tmdbId, contextTitle) {
+if (!TMDB_API_KEY || !tmdbId) return null;
+try {
+const detailedMovie = await axios.get(${TMDB_API_URL}/movie/${tmdbId}, {
+params: { api_key: TMDB_API_KEY, append_to_response: 'external_ids' },
+timeout: TIMEOUT
+});
+code
+Code
+const movieData = detailedMovie.data;
 
-  async #search(params) {
-    if (!TMDB_API_KEY) return [];
-    try {
-      const { data } = await axios.get(`${TMDB_API_URL}/search/movie`, {
-        params: { api_key: TMDB_API_KEY, ...params },
-        timeout: TIMEOUT
-      });
-      return data.results || [];
-    } catch (error) {
-      log('Error during TMDB search for params %o. Message: %s', params, error.message);
-      if (error.response) { log('TMDB API Error Response: %o', error.response.data); }
-      return [];
-    }
-  }
-
-  async #getMovieDetails(tmdbId) {
-    if (!TMDB_API_KEY || !tmdbId) return null;
-    try {
-      const { data } = await axios.get(`${TMDB_API_URL}/movie/${tmdbId}`, {
-        params: { api_key: TMDB_API_KEY, append_to_response: 'external_ids' },
-        timeout: TIMEOUT
-      });
-      return data;
-    } catch (error) {
-      log('Error getting TMDB movie details for id %s: %O', tmdbId, error.message);
-      if (error.response) { log('TMDB API Error Response: %o', error.response.data); }
-      return null;
-    }
-  }
-
-  // R48: Completely overhauled search logic to include year in local filtering.
-  async searchMovie(title, year) {
-    if (!TMDB_API_KEY) return null;
-    
-    const sanitizedTitle = this.#sanitizeTitle(title);
-    log('Searching TMDB for sanitized title: "%s" (original: "%s"), year: %s', sanitizedTitle, title, year);
-    
-    // Step 1: Gather all possible candidates from the API, biasing towards the year.
-    const resultsByYearIN = await this.#search({ query: sanitizedTitle, year: year, region: 'IN' });
-    const resultsByYear = await this.#search({ query: sanitizedTitle, year: year });
-    const resultsGlobal = await this.#search({ query: sanitizedTitle });
-
-    // Combine results and create a unique set based on TMDB ID to avoid duplicates.
-    const allResults = [...resultsByYearIN, ...resultsByYear, ...resultsGlobal];
-    const uniqueResults = [...new Map(allResults.map(item => [item.id, item])).values()];
-    
-    if (uniqueResults.length === 0) {
-        log('No TMDB match found for: %s (%s)', sanitizedTitle, year);
-        return null;
-    }
-
-    const lowerCaseTitle = sanitizedTitle.toLowerCase();
-
-    // Step 2: Apply our strict, tiered filtering logic locally.
-    const getYearFromResult = (result) => result.release_date ? new Date(result.release_date).getFullYear() : null;
-
-    // Tier 1: Exact Title + Exact Year + Indian Language
-    let bestMatch = uniqueResults.find(r => 
-      r.title.toLowerCase() === lowerCaseTitle &&
-      getYearFromResult(r) === year &&
-      INDIAN_LANGUAGES.includes(r.original_language)
-    );
-    if (bestMatch) {
-      log('Found best match on Tier 1 (Exact Title + Year + Indian Language): %s', bestMatch.title);
-      return this.#getMovieDetails(bestMatch.id);
-    }
-    
-    // Tier 2: Exact Title + Exact Year + Any Language
-    bestMatch = uniqueResults.find(r => 
-      r.title.toLowerCase() === lowerCaseTitle &&
-      getYearFromResult(r) === year
-    );
-    if (bestMatch) {
-      log('Found best match on Tier 2 (Exact Title + Year + Any Language): %s', bestMatch.title);
-      return this.#getMovieDetails(bestMatch.id);
-    }
-    
-    // Tier 3: Fallback to the very first result from the original combined list (respecting API bias).
-    const fallbackResult = allResults[0];
-    if (fallbackResult) {
-        log('No exact match found. Falling back to API top result: %s', fallbackResult.title);
-        return this.#getMovieDetails(fallbackResult.id);
-    }
-
-    log('No TMDB match found after filtering for: %s (%s)', sanitizedTitle, year);
+  if (movieData && movieData.external_ids?.imdb_id) {
+    return movieData;
+  } else {
+    log('Match found for "%s" (TMDB ID: %s), but REJECTED due to missing IMDb ID.', contextTitle, tmdbId);
     return null;
   }
+} catch (error) {
+  log('Error getting TMDB movie details for id %s. Message: %s', tmdbId, error.message);
+  if (error.response) { log('TMDB API Error Response: %o', error.response.data); }
+  return null;
+}
+}
+// R51: Re-architected search logic to iterate and validate all potential matches.
+async searchMovie(title, year) {
+if (!TMDB_API_KEY) return null;
+code
+Code
+const sanitizedTitle = this.#sanitizeTitle(title);
+log('Searching TMDB for sanitized title: "%s" (original: "%s"), year: %s', sanitizedTitle, title, year);
 
-  async getMovieDetailsByImdbId(imdbId) {
-    if (!TMDB_API_KEY || !imdbId) return null;
-    log('Finding TMDB entry for IMDb ID: %s', imdbId);
-    try {
-      const { data } = await axios.get(`${TMDB_API_URL}/find/${imdbId}`, {
-        params: { api_key: TMDB_API_KEY, external_source: 'imdb_id' },
-        timeout: TIMEOUT
-      });
-      if (data.movie_results && data.movie_results.length > 0) {
-        return this.#getMovieDetails(data.movie_results[0].id);
-      }
-      return null;
-    } catch (error)
-    {
-      log('Error finding by IMDb ID %s. Message: %s', imdbId, error.message);
-      if (error.response) { log('TMDB API Error Response: %o', error.response.data); }
-      return null;
-    }
+// Step 1: Gather all possible candidates from the API.
+const resultsByYearIN = await this.#search({ query: sanitizedTitle, year: year, region: 'IN' });
+const resultsByYear = await this.#search({ query: sanitizedTitle, year: year });
+const resultsGlobal = await this.#search({ query: sanitizedTitle });
+
+const allResults = [...resultsByYearIN, ...resultsByYear, ...resultsGlobal];
+const uniqueResults = [...new Map(allResults.map(item => [item.id, item])).values()];
+
+if (uniqueResults.length === 0) {
+    log('No TMDB candidate matches found for: %s (%s)', sanitizedTitle, year);
+    return null;
+}
+
+// Step 2: Create a prioritized list for local filtering.
+const lowerCaseTitle = sanitizedTitle.toLowerCase();
+const getYearFromResult = (result) => result.release_date ? new Date(result.release_date).getFullYear() : null;
+
+const prioritizedCandidates = uniqueResults.sort((a, b) => {
+  const aTitleMatch = a.title.toLowerCase() === lowerCaseTitle;
+  const bTitleMatch = b.title.toLowerCase() === lowerCaseTitle;
+  const aYearMatch = getYearFromResult(a) === year;
+  const bYearMatch = getYearFromResult(b) === year;
+  const aLangMatch = INDIAN_LANGUAGES.includes(a.original_language);
+  const bLangMatch = INDIAN_LANGUAGES.includes(b.original_language);
+
+  // Give a score to each result. Higher is better.
+  const aScore = (aTitleMatch && aYearMatch && aLangMatch ? 8 : 0) +
+                 (aTitleMatch && aYearMatch ? 4 : 0) +
+                 (aTitleMatch ? 2 : 0) +
+                 (a.popularity > 0.5 ? 1 : 0);
+                 
+  const bScore = (bTitleMatch && bYearMatch && bLangMatch ? 8 : 0) +
+                 (bTitleMatch && bYearMatch ? 4 : 0) +
+                 (bTitleMatch ? 2 : 0) +
+                 (b.popularity > 0.5 ? 1 : 0);
+
+  return bScore - aScore; // Sort descending by score
+});
+
+// Step 3: Iterate through the prioritized list and return the FIRST valid result.
+log(`Found ${prioritizedCandidates.length} unique candidates. Validating in order of priority...`);
+for (const candidate of prioritizedCandidates) {
+  log(`Attempting validation for candidate: "${candidate.title}" (ID: ${candidate.id})`);
+  const validatedMovieDetails = await this.#getAndValidateMovieDetails(candidate.id, sanitizedTitle);
+  if (validatedMovieDetails) {
+    log(`Validation successful for "${candidate.title}"! Selecting this as the best match.`);
+    return validatedMovieDetails; // Success! Return immediately.
   }
 }
 
+log('Exhausted all candidates. No valid TMDB match with an IMDb ID found for: %s (%s)', sanitizedTitle, year);
+return null;
+}
+async getMovieDetailsByImdbId(imdbId) {
+if (!TMDB_API_KEY || !imdbId) return null;
+log('Finding TMDB entry for IMDb ID: %s', imdbId);
+try {
+const { data } = await axios.get(${TMDB_API_URL}/find/${imdbId}, {
+params: { api_key: TMDB_API_KEY, external_source: 'imdb_id' },
+timeout: TIMEOUT
+});
+if (data.movie_results && data.movie_results.length > 0) {
+return this.#getAndValidateMovieDetails(data.movie_results[0].id, imdbId);
+}
+return null;
+} catch (error) {
+log('Error finding by IMDb ID %s. Message: %s', imdbId, error.message);
+if (error.response) { log('TMDB API Error Response: %o', error.response.data); }
+return null;
+}
+}
+}
 export default new TmdbProvider();
