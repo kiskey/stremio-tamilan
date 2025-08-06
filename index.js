@@ -108,12 +108,40 @@ app.use(express.json());
 const addonInterface = builder.getInterface();
 app.use('/', getRouter(addonInterface));
 
-// ... GET /admin route remains the same ...
+// R53: Update admin route to handle pagination
 app.get('/admin', async (req, res) => {
   log('Admin dashboard request');
   try {
+    const PAGE_SIZE = 50;
+    let page = parseInt(req.query.page, 10) || 1;
+    if (page < 1) page = 1;
+
+    const skip = (page - 1) * PAGE_SIZE;
+
     const stats = await db.getStats();
-    const unlinkedMovies = await db.getUnlinkedMovies();
+    const unlinkedMovies = await db.getUnlinkedMovies(PAGE_SIZE, skip);
+    const totalPages = Math.ceil(stats.unlinked / PAGE_SIZE);
+
+    // Function to generate pagination HTML
+    const renderPagination = () => {
+      let html = '<div class="pagination">';
+      if (page > 1) {
+        html += `<a href="/admin?page=${page - 1}">&laquo; Previous</a>`;
+      }
+      for (let i = 1; i <= totalPages; i++) {
+        if (i === page) {
+          html += `<a class="active">${i}</a>`;
+        } else {
+          html += `<a href="/admin?page=${i}">${i}</a>`;
+        }
+      }
+      if (page < totalPages) {
+        html += `<a href="/admin?page=${page + 1}">Next &raquo;</a>`;
+      }
+      html += '</div>';
+      return html;
+    };
+
     const html = `
       <!DOCTYPE html>
       <html lang="en">
@@ -138,6 +166,10 @@ app.get('/admin', async (req, res) => {
           .manual-link-table { width: 100%; margin-top: 20px; }
           .manual-link-table td { padding: 4px; }
           .manual-link-table input { width: 150px; padding: 4px; }
+          .pagination { text-align: center; margin-top: 20px; }
+          .pagination a { color: #007bff; padding: 8px 16px; text-decoration: none; transition: background-color .3s; border: 1px solid #ddd; margin: 0 4px; }
+          .pagination a.active { background-color: #007bff; color: white; border: 1px solid #007bff; }
+          .pagination a:hover:not(.active) { background-color: #ddd; }
         </style>
       </head>
       <body>
@@ -152,7 +184,7 @@ app.get('/admin', async (req, res) => {
           <h2>Unlinked Content Management</h2>
           <div class="controls-container">
             <div class="list-box">
-              <h3>Unlinked Items (${unlinkedMovies.length})</h3>
+              <h3>Unlinked Items (Page ${page} of ${totalPages})</h3>
               <select id="unlinkedList" multiple>
                 ${unlinkedMovies.map(m => `<option value="${m.id}">${m.title} (${m.year})</option>`).join('')}
               </select>
@@ -169,7 +201,8 @@ app.get('/admin', async (req, res) => {
               <button id="rematchBtn" onclick="rematchSelected()">Rematch Selected</button>
             </div>
           </div>
-          <h2>Manual Linking</h2>
+          ${renderPagination()}
+          <h2>Manual Linking (Current Page)</h2>
           <div class="manual-link-table">
             <table>${unlinkedMovies.map(m => `
               <tr>
@@ -179,8 +212,10 @@ app.get('/admin', async (req, res) => {
               </tr>`).join('')}
             </table>
           </div>
+          ${renderPagination()}
         </div>
         <script>
+          // ... JS functions remain the same ...
           function moveItems(fromId, toId, all = false) {
             const fromList = document.getElementById(fromId);
             const toList = document.getElementById(toId);
@@ -241,7 +276,7 @@ app.get('/admin', async (req, res) => {
   }
 });
 
-// R44: Enhanced logging in the rematch endpoint
+// ... POST endpoints and app startup remain the same ...
 app.post('/admin/rematch', async (req, res) => {
     const { ids } = req.body;
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -272,7 +307,6 @@ app.post('/admin/rematch', async (req, res) => {
     res.json({ success: successCount, failed: moviesToRematch.length - successCount });
 });
 
-// ... POST /admin/manual-link, /health, and app startup remain the same ...
 app.post('/admin/manual-link', async (req, res) => {
     const { id, imdbId } = req.body;
     if (!id || !imdbId) {
