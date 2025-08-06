@@ -14,7 +14,8 @@ const manifest = {
   description: 'Tamil movies from Tamilan24',
   logo: 'https://tamilan24.com/themes/tamilan24/assets/images/logo.png',
   background: 'https://tamilan24.com/themes/tamilan24/assets/images/logo.png',
-  resources: ['catalog', 'meta', 'stream'],
+  // R21: Remove 'meta' as we now rely on Cinemata via imdb_id
+  resources: ['catalog', 'stream'],
   types: ['movie'],
   catalogs: [
     {
@@ -44,16 +45,17 @@ builder.defineCatalogHandler(async (args) => {
       movies = await db.getMovies(limit, skip);
     }
     
-    const metas = movies.map(movie => ({
-      id: movie.imdb_id || `t24:${movie.id}`,
-      type: 'movie',
-      name: movie.title,
-      poster: movie.poster,
-      background: movie.poster,
-      description: movie.description,
-      releaseInfo: movie.year ? movie.year.toString() : '',
-      imdbRating: movie.rating ? parseFloat(movie.rating).toFixed(1) : null,
-      genres: movie.genre ? movie.genre.split(',').map(g => g.trim()) : []
+    const metas = movies
+      .filter(movie => movie.imdb_id) // R21: Only show movies for which we found an imdb_id
+      .map(movie => ({
+        id: movie.imdb_id, // Use imdb_id directly
+        type: 'movie',
+        name: movie.title,
+        poster: movie.poster,
+        description: movie.description,
+        releaseInfo: movie.year ? movie.year.toString() : '',
+        imdbRating: movie.rating ? movie.rating.toString() : null,
+        genres: movie.genre ? movie.genre.split(',').map(g => g.trim()) : []
     }));
     
     return Promise.resolve({ metas });
@@ -63,53 +65,21 @@ builder.defineCatalogHandler(async (args) => {
   }
 });
 
-builder.defineMetaHandler(async (args) => {
-  log('Meta request: %O', args);
-  try {
-    const id = args.id.startsWith('t24:') ? args.id.replace('t24:', '') : args.id;
-    let movie;
-    
-    if (args.id.startsWith('tt')) {
-      movie = await db.getMovieByImdbId(id);
-    } else {
-      movie = await db.getMovieById(id);
-    }
-    
-    if (!movie) {
-      return Promise.resolve({ meta: null });
-    }
-    
-    const meta = {
-      id: movie.imdb_id || `t24:${movie.id}`,
-      type: 'movie',
-      name: movie.title,
-      poster: movie.poster,
-      background: movie.poster,
-      description: movie.description,
-      releaseInfo: movie.year ? movie.year.toString() : '',
-      imdbRating: movie.rating ? parseFloat(movie.rating).toFixed(1) : null,
-      genres: movie.genre ? movie.genre.split(',').map(g => g.trim()) : [],
-      runtime: movie.runtime ? `${movie.runtime} min` : null,
-      language: movie.language || 'Tamil'
-    };
-    
-    return Promise.resolve({ meta });
-  } catch (error) {
-    console.error('Meta error:', error);
-    return Promise.resolve({ meta: null });
-  }
-});
+// R21: The meta handler is no longer needed. Stremio will use the imdb_id from the
+// catalog response to fetch metadata from its own sources (Cinemata).
 
-// R13: Refactor stream handler to use the new normalized schema.
 builder.defineStreamHandler(async (args) => {
   log('Stream request: %O', args);
   try {
-    const id = args.id.startsWith('t24:') ? args.id.replace('t24:', '') : args.id;
+    // We get an imdb_id from Stremio now
+    const imdbId = args.id;
     let movie;
 
-    if (args.id.startsWith('tt')) {
-      movie = await db.getMovieByImdbId(id);
+    if (imdbId.startsWith('tt')) {
+      movie = await db.getMovieByImdbId(imdbId);
     } else {
+      // Fallback for any old IDs, though this should be rare now
+      const id = args.id.startsWith('t24:') ? args.id.replace('t24:', '') : args.id;
       movie = await db.getMovieById(id);
     }
     
@@ -118,11 +88,9 @@ builder.defineStreamHandler(async (args) => {
       return Promise.resolve({ streams: [] });
     }
     
-    // Fetch all streams for the found movie ID.
     const streamsFromDb = await db.getStreamsForMovieId(movie.id);
     
     if (!streamsFromDb || streamsFromDb.length === 0) {
-      log('No streams found in DB for movie ID: %s', movie.id);
       return Promise.resolve({ streams: [] });
     }
     
@@ -147,7 +115,6 @@ const addonInterface = builder.getInterface();
 app.use('/', getRouter(addonInterface));
 
 app.get('/health', (req, res) => {
-  log('Health check request');
   res.status(200).json({ status: 'ok' });
 });
 
