@@ -14,7 +14,7 @@ const manifest = {
   description: 'Tamil movies from Tamilan24',
   logo: 'https://tamilan24.com/themes/tamilan24/assets/images/logo.png',
   background: 'https://tamilan24.com/themes/tamilan24/assets/images/logo.png',
-  // Reverting to the previous state for accurate diagnosis
+  // Back to the lean version, as we don't need a meta handler for the main catalog.
   resources: ['catalog', 'stream'],
   types: ['movie'],
   catalogs: [
@@ -42,24 +42,12 @@ builder.defineCatalogHandler(async (args) => {
     if (args.extra.search) {
       movies = await db.searchMovies(args.extra.search, limit, skip);
     } else {
+      // R32: This function now correctly filters for linked movies at the DB level.
       movies = await db.getMovies(limit, skip);
     }
     
-    // R34: ADDED DIAGNOSTIC LOGGING
-    // This will tell us exactly what's happening before the filter.
-    if (movies && movies.length > 0) {
-      const moviesWithImdbIdCount = movies.filter(m => m.imdb_id).length;
-      log(`DIAGNOSTIC: Retrieved ${movies.length} movies from DB. Found ${moviesWithImdbIdCount} with an imdb_id.`);
-      // Optional: Log the first few raw movie objects to see their state
-      log('DIAGNOSTIC: First 3 movie objects from DB:', JSON.stringify(movies.slice(0, 3), null, 2));
-    } else {
-      log('DIAGNOSTIC: No movies were returned from the database query.');
-    }
-    
-    // This is the original, problematic code we are diagnosing.
-    const metas = movies
-      .filter(movie => movie.imdb_id)
-      .map(movie => ({
+    // The movies array now only contains items with an imdb_id.
+    const metas = movies.map(movie => ({
         id: movie.imdb_id,
         type: 'movie',
         name: movie.title,
@@ -76,7 +64,6 @@ builder.defineCatalogHandler(async (args) => {
     return Promise.resolve({ metas: [] });
   }
 });
-
 
 builder.defineStreamHandler(async (args) => {
   log('Stream request: %O', args);
@@ -98,7 +85,7 @@ builder.defineStreamHandler(async (args) => {
     
     const streamsFromDb = await db.getStreamsForMovieId(movie.id);
     
-    if (!streamsFromDb || !streamsFromDb.length) {
+    if (!streamsFromDb || streamsFromDb.length === 0) {
       return Promise.resolve({ streams: [] });
     }
     
@@ -122,6 +109,76 @@ const app = express();
 const addonInterface = builder.getInterface();
 app.use('/', getRouter(addonInterface));
 
+// R33, R34, R35: Add the new admin dashboard route
+app.get('/admin', async (req, res) => {
+  log('Admin dashboard request');
+  try {
+    const stats = await db.getStats();
+    const unlinkedMovies = await db.getUnlinkedMovies();
+
+    const html = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Addon Admin Dashboard</title>
+        <style>
+          body { font-family: Arial, sans-serif; background: #f4f4f4; color: #333; padding: 20px; }
+          .container { max-width: 800px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+          h1, h2 { color: #555; }
+          .stats { display: flex; justify-content: space-around; text-align: center; margin-bottom: 30px; }
+          .stat { padding: 20px; background: #eee; border-radius: 8px; width: 30%; }
+          .stat h3 { margin: 0; font-size: 2.5em; }
+          .unlinked-container { max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; border-radius: 8px; }
+          table { width: 100%; border-collapse: collapse; }
+          th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+          th { background: #f0f0f0; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>Addon Admin Dashboard</h1>
+          <h2>Content Summary</h2>
+          <div class="stats">
+            <div class="stat"><h3>${stats.total}</h3><p>Total Items</p></div>
+            <div class="stat" style="color: green;"><h3>${stats.linked}</h3><p>Linked (in Catalog)</p></div>
+            <div class="stat" style="color: orange;"><h3>${stats.unlinked}</h3><p>Unlinked (Not in Catalog)</p></div>
+          </div>
+          <h2>Unlinked Content (imdb_id is NULL)</h2>
+          <div class="unlinked-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>DB ID</th>
+                  <th>Title</th>
+                  <th>Year</th>
+                  <th>Date Scraped</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${unlinkedMovies.map(m => `
+                  <tr>
+                    <td>${m.id}</td>
+                    <td>${m.title}</td>
+                    <td>${m.year}</td>
+                    <td>${m.created_at}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+    res.send(html);
+  } catch (error) {
+    console.error('Admin dashboard error:', error);
+    res.status(500).send('Error generating dashboard.');
+  }
+});
+
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
@@ -132,6 +189,7 @@ const scheduler = new ScraperScheduler();
 db.init().then(() => {
   app.listen(port, '0.0.0.0', () => {
     console.log(`Addon running on http://0.0.0.0:${port}`);
+    console.log(`Admin dashboard available at http://0.0.0.0:${port}/admin`);
     log(`Addon server started on port ${port}`);
     scheduler.start();
   });
