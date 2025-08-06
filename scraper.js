@@ -1,136 +1,170 @@
-import axios from 'axios';
-import * as cheerio from 'cheerio';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import debug from 'debug';
-import db from './database.js';
-import tmdb from './tmdb.js'; // R18: Import TMDB module
+import fs from 'fs';
 
-const log = debug('addon:scraper');
-const scraperTargetUrl = process.env.SCRAPER_TARGET_URL || 'https://tamilan24.com/videos/latest';
+const log = debug('addon:database');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// R17: Helper for throttling requests
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-async function scrapeMovieListPage(page = 1) {
-  const url = `${scraperTargetUrl}?page_id=${page}`;
-  log('Scraping movie list from URL: %s', url);
-  try {
-    const { data } = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      },
-      timeout: 15000 // R17: Set a 15-second timeout
-    });
-    const $ = cheerio.load(data);
-    const movies = [];
-
-    for (const element of $('div.videos-latest-list .video-list').get()) {
-      const $element = $(element);
-      const moviePageUrl = $element.find('a.thumb').attr('href');
-      const poster = $element.find('img').attr('src');
-      const altText = $element.find('img').attr('alt');
-      
-      if (!altText || !moviePageUrl) continue;
-
-      const match = altText.match(/^(.*?)\s*\((\d{4})\)$/);
-      let title, year;
-
-      if (match) {
-        title = match[1].trim();
-        year = parseInt(match[2], 10);
-      } else {
-        title = altText.trim();
-        year = new Date().getFullYear();
-      }
-
-      movies.push({ title, year, poster, moviePageUrl });
-    }
-    log('Found %d movies on page %d', movies.length, page);
-    return movies;
-  } catch (error) {
-    console.error(`Error scraping ${url}:`, error.message);
-    return [];
-  }
+const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
+if (!fs.existsSync(dataDir)) {
+  log('Creating data directory at %s', dataDir);
+  fs.mkdirSync(dataDir, { recursive: true });
 }
+const dbPath = path.join(dataDir, 'database.sqlite');
 
-// R17: Add retry logic
-async function scrapeStreamUrl(moviePageUrl, retries = 2) {
-  log('Scraping stream URL from detail page: %s', moviePageUrl);
-  try {
-    const { data } = await axios.get(moviePageUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Referer': scraperTargetUrl // Add Referer header
-      },
-      timeout: 15000 // 15-second timeout
-    });
-    const $ = cheerio.load(data);
-    const videoUrl = $('div.player-video source').attr('src');
-    const quality = $('div.player-video source').attr('data-quality') || 'HD';
+class Database {
+  constructor() {
+    if (Database.instance) {
+      return Database.instance;
+    }
+    this.db = null;
+    Database.instance = this;
+  }
 
-    if (!videoUrl) return null;
+  async init() {
+    if (this.db) {
+      log('Database already initialized.');
+      return;
+    }
+    try {
+      this.db = await open({
+        filename: dbPath,
+        driver: sqlite3.Database
+      });
+      log('Database initialized at %s', dbPath);
+      await this.createTables();
+    } catch (error) {
+      console.error('Database initialization failed:', error);
+      log('Database initialization failed: %O', error);
+      throw error;
+    }
+  }
 
-    const description = $('.post-description-box p').text().trim() || 'No description available.';
-    const genre = $('.post-genres a').map((i, el) => $(el).text()).get().join(', ') || 'General';
+  async createTables() {
+    const createMoviesTableQuery = `
+      CREATE TABLE IF NOT EXISTS movies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT,
+        year INTEGER,
+        imdb_id TEXT,
+        tmdb_id TEXT,
+        genre TEXT,
+        rating REAL,
+        poster TEXT,
+        description TEXT,
+        runtime INTEGER,
+        language TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(title, year)
+      )
+    `;
+    await this.db.run(createMoviesTableQuery);
+    log('Movies table created or already exists');
 
-    return { video_url: videoUrl, quality, description, genre };
-  } catch (error) {
-    log('Error scraping %s: %s. Retries left: %d', moviePageUrl, error.message, retries);
-    if (retries > 0) {
-      await delay(2000); // Wait 2 seconds before retrying
-      return scrapeStreamUrl(moviePageUrl, retries - 1);
+    const createStreamsTableQuery = `
+      CREATE TABLE IF NOT EXISTS streams (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        movie_id INTEGER,
+        title TEXT,
+        url TEXT,
+        quality TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(movie_id) REFERENCES movies(id) ON DELETE CASCADE,
+        UNIQUE(movie_id, url)
+      )
+    `;
+    await this.db.run(createStreamsTableQuery);
+    log('Streams table created or already exists');
+  }
+
+  // R30: New efficient function to check for a movie's existence.
+  async movieExists(title, year) {
+    const query = 'SELECT 1 FROM movies WHERE title = ? AND year = ? LIMIT 1';
+    const result = await this.db.get(query, [title, year]);
+    return !!result; // Convert result to boolean (true if exists, false if not)
+  }
+
+  async addMovieAndStream(movie) {
+    const findMovieQuery = 'SELECT id FROM movies WHERE title = ? AND year = ?';
+    let existingMovie = await this.db.get(findMovieQuery, [movie.title, movie.year]);
+
+    let movieId;
+    if (existingMovie) {
+      movieId = existingMovie.id;
+      const updateMovieQuery = `
+        UPDATE movies 
+        SET poster = ?, description = ?, genre = ?, rating = ?, imdb_id = ?, tmdb_id = ?
+        WHERE id = ?
+      `;
+      await this.db.run(updateMovieQuery, [
+        movie.poster, movie.description, movie.genre, movie.rating, movie.imdb_id, movie.tmdb_id, movieId
+      ]);
+      log('Found existing movie "%s (%s)". ID: %d. Updating metadata.', movie.title, movie.year, movieId);
     } else {
-      console.error(`Failed to scrape ${moviePageUrl} after multiple retries.`);
-      return null;
-    }
-  }
-}
-
-export async function runScraper() {
-  log('Starting scraper run...');
-  const isFullScrape = process.env.SCRAPE_MODE === 'full';
-  const processPage = async (page) => {
-    const moviesFromList = await scrapeMovieListPage(page);
-    if (moviesFromList.length === 0) {
-      log(`No more movies found on page ${page}.`);
-      return false; // No more pages
+      const insertMovieQuery = `
+        INSERT INTO movies (title, year, imdb_id, tmdb_id, genre, rating, poster, description, runtime, language)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      const result = await this.db.run(insertMovieQuery, [
+        movie.title, movie.year, movie.imdb_id, movie.tmdb_id, movie.genre,
+        movie.rating, movie.poster, movie.description, movie.runtime, movie.language
+      ]);
+      movieId = result.lastID;
+      log('Inserted new movie "%s (%s)". ID: %d', movie.title, movie.year, movieId);
     }
 
-    for (const movie of moviesFromList) {
-      // R17: Throttle requests to avoid being blocked
-      await delay(1000 + Math.random() * 1000); // Wait 1-2 seconds
-
-      const streamDetails = await scrapeStreamUrl(movie.moviePageUrl);
-      if (streamDetails && streamDetails.video_url) {
-        let finalMovieData = { ...movie, ...streamDetails };
-
-        // R18: Enrich with TMDB data
-        const tmdbData = await tmdb.searchMovie(finalMovieData.title, finalMovieData.year);
-        if (tmdbData && tmdbData.external_ids?.imdb_id) {
-          log('TMDB success for "%s": Found imdb_id %s', finalMovieData.title, tmdbData.external_ids.imdb_id);
-          finalMovieData.imdb_id = tmdbData.external_ids.imdb_id;
-          finalMovieData.tmdb_id = tmdbData.id;
-          finalMovieData.description = tmdbData.overview || finalMovieData.description;
-          finalMovieData.rating = tmdbData.vote_average?.toFixed(1) || finalMovieData.rating;
-          finalMovieData.genre = tmdbData.genres?.map(g => g.name).join(', ') || finalMovieData.genre;
-        } else {
-            log('TMDB fail for "%s". Using scraped data.', finalMovieData.title);
-        }
-        await db.addMovieAndStream(finalMovieData);
+    if (movieId && movie.video_url) {
+      const streamTitle = `Tamilan24 - ${movie.quality || 'HD'}`;
+      const insertStreamQuery = `
+        INSERT OR IGNORE INTO streams (movie_id, title, url, quality)
+        VALUES (?, ?, ?, ?)
+      `;
+      const streamResult = await this.db.run(insertStreamQuery, [movieId, streamTitle, movie.video_url, movie.quality]);
+      if (streamResult.changes > 0) {
+        log('Added new stream for movie ID %d: %s', movieId, movie.video_url);
+      } else {
+        log('Stream already exists for movie ID %d: %s', movieId, movie.video_url);
       }
     }
-    return true; // More pages may exist
-  };
+  }
 
-  if (isFullScrape) {
-    log('Full scrape mode enabled. Scraping all pages...');
-    let page = 1;
-    while (await processPage(page)) {
-      page++;
+  async getMovies(limit = 100, skip = 0) {
+    const query = 'SELECT * FROM movies ORDER BY created_at DESC, year DESC LIMIT ? OFFSET ?';
+    return this.db.all(query, [limit, skip]);
+  }
+
+  async searchMovies(searchTerm, limit = 100, skip = 0) {
+    const query = 'SELECT * FROM movies WHERE title LIKE ? ORDER BY created_at DESC, year DESC LIMIT ? OFFSET ?';
+    return this.db.all(query, [`%${searchTerm}%`, limit, skip]);
+  }
+
+  async getMovieById(id) {
+    const query = 'SELECT * FROM movies WHERE id = ?';
+    return this.db.get(query, [id]);
+  }
+
+  async getMovieByImdbId(imdbId) {
+    const query = 'SELECT * FROM movies WHERE imdb_id = ?';
+    return this.db.get(query, [imdbId]);
+  }
+
+  async getStreamsForMovieId(movieId) {
+    const query = 'SELECT * FROM streams WHERE movie_id = ?';
+    return this.db.all(query, [movieId]);
+  }
+
+  async close() {
+    if (this.db) {
+      await this.db.close();
+      this.db = null;
+      log('Database connection closed');
     }
-    log('Full scrape finished.');
-  } else {
-    log('Incremental scrape mode. Scraping first page...');
-    await processPage(1);
-    log('Incremental scrape finished.');
   }
 }
+
+const databaseInstance = new Database();
+export default databaseInstance;
