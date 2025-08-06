@@ -9,8 +9,6 @@ const log = debug('addon:database');
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// R24 & R25: Use a dedicated data directory for the database.
-// This allows a volume to be mounted to this directory without overwriting the app code.
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) {
   log('Creating data directory at %s', dataDir);
@@ -92,10 +90,12 @@ class Database {
       movieId = existingMovie.id;
       const updateMovieQuery = `
         UPDATE movies 
-        SET poster = ?, description = ?, genre = ?, rating = ?, imdb_id = ?
+        SET poster = ?, description = ?, genre = ?, rating = ?, imdb_id = ?, tmdb_id = ?
         WHERE id = ?
       `;
-      await this.db.run(updateMovieQuery, [movie.poster, movie.description, movie.genre, movie.rating, movie.imdb_id, movieId]);
+      await this.db.run(updateMovieQuery, [
+        movie.poster, movie.description, movie.genre, movie.rating, movie.imdb_id, movie.tmdb_id, movieId
+      ]);
       log('Found existing movie "%s (%s)". ID: %d. Updating metadata.', movie.title, movie.year, movieId);
     } else {
       const insertMovieQuery = `
@@ -126,12 +126,14 @@ class Database {
   }
 
   async getMovies(limit = 100, skip = 0) {
-    const query = 'SELECT * FROM movies ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    // R29: Add secondary sort by year to logically order items from a full scrape.
+    const query = 'SELECT * FROM movies ORDER BY created_at DESC, year DESC LIMIT ? OFFSET ?';
     return this.db.all(query, [limit, skip]);
   }
 
   async searchMovies(searchTerm, limit = 100, skip = 0) {
-    const query = 'SELECT * FROM movies WHERE title LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    // R29: Also apply consistent sorting to search results.
+    const query = 'SELECT * FROM movies WHERE title LIKE ? ORDER BY created_at DESC, year DESC LIMIT ? OFFSET ?';
     return this.db.all(query, [`%${searchTerm}%`, limit, skip]);
   }
 
