@@ -20,7 +20,6 @@ class TmdbProvider {
   async #search(params) {
     if (!TMDB_API_KEY) return [];
     try {
-      // R52: Ensured backticks are used for the template literal string.
       const { data } = await axios.get(`${TMDB_API_URL}/search/movie`, {
         params: { api_key: TMDB_API_KEY, ...params },
         timeout: TIMEOUT
@@ -36,7 +35,6 @@ class TmdbProvider {
   async #getAndValidateMovieDetails(tmdbId, contextTitle) {
     if (!TMDB_API_KEY || !tmdbId) return null;
     try {
-      // R52: Ensured backticks are used for the template literal string.
       const detailedMovie = await axios.get(`${TMDB_API_URL}/movie/${tmdbId}`, {
         params: { api_key: TMDB_API_KEY, append_to_response: 'external_ids' },
         timeout: TIMEOUT
@@ -64,10 +62,11 @@ class TmdbProvider {
     log('Searching TMDB for sanitized title: "%s" (original: "%s"), year: %s', sanitizedTitle, title, year);
     
     const resultsByYearIN = await this.#search({ query: sanitizedTitle, year: year, region: 'IN' });
+    const resultsIN = await this.#search({ query: sanitizedTitle, region: 'IN' }); // For the new tier
     const resultsByYear = await this.#search({ query: sanitizedTitle, year: year });
     const resultsGlobal = await this.#search({ query: sanitizedTitle });
 
-    const allResults = [...resultsByYearIN, ...resultsByYear, ...resultsGlobal];
+    const allResults = [...resultsByYearIN, ...resultsIN, ...resultsByYear, ...resultsGlobal];
     const uniqueResults = [...new Map(allResults.map(item => [item.id, item])).values()];
     
     if (uniqueResults.length === 0) {
@@ -78,6 +77,7 @@ class TmdbProvider {
     const lowerCaseTitle = sanitizedTitle.toLowerCase();
     const getYearFromResult = (result) => result.release_date ? new Date(result.release_date).getFullYear() : null;
 
+    // R54: Update scoring logic to include the new Tier 3.
     const prioritizedCandidates = uniqueResults.sort((a, b) => {
       const aTitleMatch = a.title.toLowerCase() === lowerCaseTitle;
       const bTitleMatch = b.title.toLowerCase() === lowerCaseTitle;
@@ -86,17 +86,20 @@ class TmdbProvider {
       const aLangMatch = INDIAN_LANGUAGES.includes(a.original_language);
       const bLangMatch = INDIAN_LANGUAGES.includes(b.original_language);
 
-      const aScore = (aTitleMatch && aYearMatch && aLangMatch ? 8 : 0) +
-                     (aTitleMatch && aYearMatch ? 4 : 0) +
-                     (aTitleMatch ? 2 : 0) +
-                     (a.popularity > 0.5 ? 1 : 0);
+      // Give a score to each result based on our 5-tier priority. Higher is better.
+      const aScore = (aTitleMatch && aYearMatch && aLangMatch ? 16 : 0) + // Tier 1
+                     (aTitleMatch && aYearMatch ? 8 : 0) +                // Tier 2
+                     (aTitleMatch && aLangMatch ? 4 : 0) +                // Tier 3 (New)
+                     (aTitleMatch ? 2 : 0) +                              // Tier 4
+                     (a.popularity > 0.5 ? 1 : 0);                        // Popularity bonus
                      
-      const bScore = (bTitleMatch && bYearMatch && bLangMatch ? 8 : 0) +
-                     (bTitleMatch && bYearMatch ? 4 : 0) +
+      const bScore = (bTitleMatch && bYearMatch && bLangMatch ? 16 : 0) +
+                     (bTitleMatch && bYearMatch ? 8 : 0) +
+                     (bTitleMatch && bLangMatch ? 4 : 0) +
                      (bTitleMatch ? 2 : 0) +
                      (b.popularity > 0.5 ? 1 : 0);
 
-      return bScore - aScore;
+      return bScore - aScore; // Sort descending by score
     });
 
     log(`Found ${prioritizedCandidates.length} unique candidates. Validating in order of priority...`);
@@ -117,13 +120,12 @@ class TmdbProvider {
     if (!TMDB_API_KEY || !imdbId) return null;
     log('Finding TMDB entry for IMDb ID: %s', imdbId);
     try {
-      // R52: Ensured backticks are used for the template literal string.
       const { data } = await axios.get(`${TMDB_API_URL}/find/${imdbId}`, {
         params: { api_key: TMDB_API_KEY, external_source: 'imdb_id' },
         timeout: TIMEOUT
       });
       if (data.movie_results && data.movie_results.length > 0) {
-        return this.#getAndValidateMovieDetails(data.movie_results.id, imdbId);
+        return this.#getAndValidateMovieDetails(data.movie_results[0].id, imdbId);
       }
       return null;
     } catch (error) {
