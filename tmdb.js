@@ -4,39 +4,48 @@ import debug from 'debug';
 const log = debug('addon:tmdb');
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const TMDB_API_URL = 'https://api.themoviedb.org/3';
+const TIMEOUT = 10000; // 10-second timeout for all TMDB API calls
 
 if (!TMDB_API_KEY) {
   log('Warning: TMDB_API_KEY environment variable not set. Metadata lookups will be skipped.');
 }
 
 class TmdbProvider {
+  // R41, R42, R43: Hardened API call with timeouts and better error logging
   async #search(params) {
     if (!TMDB_API_KEY) return null;
     try {
-      // R40: Corrected single quotes to backticks for template literal.
       const { data } = await axios.get(`${TMDB_API_URL}/search/movie`, {
-        params: { api_key: TMDB_API_KEY, ...params }
+        params: { api_key: TMDB_API_KEY, ...params },
+        timeout: TIMEOUT
       });
       return data.results && data.results.length > 0 ? data.results[0] : null;
     } catch (error) {
-      log('Error during TMDB search: %O', error.message);
+      log('Error during TMDB search for params %o. Message: %s', params, error.message);
+      if (error.response) {
+        log('TMDB API Error Response: %o', error.response.data);
+      }
       return null;
     }
   }
 
+  // R41, R42, R43: Hardened API call with timeouts and better error logging
   async #getMovieDetails(tmdbId) {
     if (!TMDB_API_KEY || !tmdbId) return null;
     try {
-      // R40: Corrected single quotes to backticks for template literal.
       const { data } = await axios.get(`${TMDB_API_URL}/movie/${tmdbId}`, {
         params: {
           api_key: TMDB_API_KEY,
           append_to_response: 'external_ids'
-        }
+        },
+        timeout: TIMEOUT
       });
       return data;
     } catch (error) {
-      log('Error getting TMDB movie details for id %s: %O', tmdbId, error.message);
+      log('Error getting TMDB movie details for id %s. Message: %s', tmdbId, error.message);
+      if (error.response) {
+        log('TMDB API Error Response: %o', error.response.data);
+      }
       return null;
     }
   }
@@ -61,23 +70,27 @@ class TmdbProvider {
     return null;
   }
 
+  // R41, R42, R43: Hardened API call with timeouts and better error logging
   async getMovieDetailsByImdbId(imdbId) {
     if (!TMDB_API_KEY || !imdbId) return null;
     log('Finding TMDB entry for IMDb ID: %s', imdbId);
     try {
-      // R40: Corrected single quotes to backticks for template literal.
       const { data } = await axios.get(`${TMDB_API_URL}/find/${imdbId}`, {
         params: {
           api_key: TMDB_API_KEY,
           external_source: 'imdb_id'
-        }
+        },
+        timeout: TIMEOUT
       });
       if (data.movie_results && data.movie_results.length > 0) {
         return this.#getMovieDetails(data.movie_results[0].id);
       }
       return null;
     } catch (error) {
-      log('Error finding by IMDb ID %s: %O', imdbId, error.message);
+      log('Error finding by IMDb ID %s. Message: %s', imdbId, error.message);
+      if (error.response) {
+        log('TMDB API Error Response: %o', error.response.data);
+      }
       return null;
     }
   }
