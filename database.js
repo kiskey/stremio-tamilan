@@ -79,6 +79,13 @@ class Database {
     `;
     await this.db.run(createStreamsTableQuery);
     log('Streams table created or already exists');
+
+    // R31: Add a composite index for sorting to make catalog queries fast.
+    const createSortIndexQuery = `
+      CREATE INDEX IF NOT EXISTS idx_movies_sort ON movies (year DESC, created_at DESC)
+    `;
+    await this.db.run(createSortIndexQuery);
+    log('Sort index for movies table created or already exists.');
   }
 
   async movieExists(title, year) {
@@ -132,15 +139,18 @@ class Database {
   }
 
   async getMovies(limit = 100, skip = 0) {
-    // R30: Prioritize sorting by release year first, then by when it was added.
     const query = 'SELECT * FROM movies ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
-    return this.db.all(query, [limit, skip]);
+    const movies = await this.db.all(query, [limit, skip]);
+    // Re-add diagnostic logging
+    log('Retrieved %d movies from DB (limit: %d, skip: %d)', movies.length, limit, skip);
+    return movies;
   }
 
   async searchMovies(searchTerm, limit = 100, skip = 0) {
-    // R30: Apply the same consistent sorting to search results.
     const query = 'SELECT * FROM movies WHERE title LIKE ? ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
-    return this.db.all(query, [`%${searchTerm}%`, limit, skip]);
+    const movies = await this.db.all(query, [`%${searchTerm}%`, limit, skip]);
+    log('Found %d movies for search term "%s"', movies.length, searchTerm);
+    return movies;
   }
 
   async getMovieById(id) {
