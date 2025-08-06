@@ -104,18 +104,16 @@ builder.defineStreamHandler(async (args) => {
 });
 
 const app = express();
-// R37 & R38: Add JSON body parser for API endpoints
 app.use(express.json()); 
 const addonInterface = builder.getInterface();
 app.use('/', getRouter(addonInterface));
 
+// ... GET /admin route remains the same ...
 app.get('/admin', async (req, res) => {
   log('Admin dashboard request');
   try {
     const stats = await db.getStats();
     const unlinkedMovies = await db.getUnlinkedMovies();
-
-    // R36, R37, R38: Greatly enhanced HTML with dual-list and JS for interactivity
     const html = `
       <!DOCTYPE html>
       <html lang="en">
@@ -243,20 +241,21 @@ app.get('/admin', async (req, res) => {
   }
 });
 
-// R37: New endpoint for batch rematching
+// R44: Enhanced logging in the rematch endpoint
 app.post('/admin/rematch', async (req, res) => {
     const { ids } = req.body;
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
         return res.status(400).json({ error: 'Invalid ID list provided.' });
     }
 
-    log(`Rematch request for ${ids.length} items.`);
+    log(`Admin Rematch: Request for ${ids.length} items.`);
     let successCount = 0;
     const moviesToRematch = await db.getUnlinkedMoviesByIds(ids);
 
     for (const movie of moviesToRematch) {
         const tmdbData = await tmdb.searchMovie(movie.title, movie.year);
         if (tmdbData && tmdbData.external_ids?.imdb_id) {
+            log(`Admin Rematch SUCCESS for "${movie.title}": Found imdb_id ${tmdbData.external_ids.imdb_id}`);
             await db.updateMovieMetadata(movie.id, {
                 imdb_id: tmdbData.external_ids.imdb_id,
                 tmdb_id: tmdbData.id,
@@ -265,12 +264,15 @@ app.post('/admin/rematch', async (req, res) => {
                 genre: tmdbData.genres?.map(g => g.name).join(', ')
             });
             successCount++;
+        } else {
+            log(`Admin Rematch FAIL for "${movie.title}": No match with imdb_id found.`);
         }
     }
+    log(`Admin Rematch Complete: ${successCount} successful, ${moviesToRematch.length - successCount} failed.`);
     res.json({ success: successCount, failed: moviesToRematch.length - successCount });
 });
 
-// R38: New endpoint for manual linking
+// ... POST /admin/manual-link, /health, and app startup remain the same ...
 app.post('/admin/manual-link', async (req, res) => {
     const { id, imdbId } = req.body;
     if (!id || !imdbId) {
@@ -293,7 +295,6 @@ app.post('/admin/manual-link', async (req, res) => {
         return res.status(404).json({ success: false, error: 'Could not find a matching movie on TMDB with that ID.' });
     }
 });
-
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
