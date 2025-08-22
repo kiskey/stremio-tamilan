@@ -31,7 +31,7 @@ const manifest = { /* ... manifest remains the same ... */
 
 const builder = new addonBuilder(manifest);
 
-// ... catalogHandler and streamHandler remain the same ...
+// R3, R13: Catalog handler for Stremio addon
 builder.defineCatalogHandler(async (args) => {
   log('Catalog request: %O', args);
   try {
@@ -41,10 +41,16 @@ builder.defineCatalogHandler(async (args) => {
     let movies;
     if (args.extra.search) {
       movies = await db.searchMovies(args.extra.search, limit, skip);
+      log('Search catalog for "%s" returned %d movies.', args.extra.search, movies.length);
     } else {
       movies = await db.getMovies(limit, skip);
+      log('Latest catalog request returned %d movies.', movies.length);
     }
     
+    if (movies.length === 0) {
+      log('Catalog handler returned no movies. Check scraper and TMDB linking.');
+    }
+
     const metas = movies.map(movie => ({
         id: movie.imdb_id,
         type: 'movie',
@@ -63,6 +69,7 @@ builder.defineCatalogHandler(async (args) => {
   }
 });
 
+// R3, R13: Stream handler for Stremio addon
 builder.defineStreamHandler(async (args) => {
   log('Stream request: %O', args);
   try {
@@ -71,19 +78,29 @@ builder.defineStreamHandler(async (args) => {
 
     if (imdbId.startsWith('tt')) {
       movie = await db.getMovieByImdbId(imdbId);
+      if (!movie) {
+        log('No movie found in DB for IMDb ID: %s. This means it\'s either not in DB or lacks valid IMDb ID.', imdbId);
+      } else {
+        log('Found movie in DB for IMDb ID: %s (internal ID: %d)', imdbId, movie.id);
+      }
     } else {
       const id = args.id.startsWith('t24:') ? args.id.replace('t24:', '') : args.id;
       movie = await db.getMovieById(id);
+      if (!movie) {
+        log('No movie found in DB for internal ID: %s.', id);
+      } else {
+        log('Found movie in DB for internal ID: %s (IMDb ID: %s)', id, movie.imdb_id || 'NULL');
+      }
     }
     
     if (!movie) {
-      log('No movie found for stream request ID: %s', args.id);
       return Promise.resolve({ streams: [] });
     }
     
     const streamsFromDb = await db.getStreamsForMovieId(movie.id);
     
     if (!streamsFromDb || streamsFromDb.length === 0) {
+      log('No streams found in DB for movie ID: %d ("%s").', movie.id, movie.title);
       return Promise.resolve({ streams: [] });
     }
     
@@ -95,7 +112,7 @@ builder.defineStreamHandler(async (args) => {
       }
     }));
     
-    log('Responding with %d streams for ID: %s', streams.length, args.id);
+    log('Responding with %d streams for ID: %s, movie: "%s"', streams.length, args.id, movie.title);
     return Promise.resolve({ streams });
   } catch (error) {
     console.error('Stream error:', error);
@@ -108,7 +125,7 @@ app.use(express.json());
 const addonInterface = builder.getInterface();
 app.use('/', getRouter(addonInterface));
 
-// R53: Update admin route to handle pagination
+// R4, R7: Admin dashboard route
 app.get('/admin', async (req, res) => {
   log('Admin dashboard request');
   try {
@@ -276,7 +293,7 @@ app.get('/admin', async (req, res) => {
   }
 });
 
-// ... POST endpoints and app startup remain the same ...
+// R4: Admin endpoint for rematching movies
 app.post('/admin/rematch', async (req, res) => {
     const { ids } = req.body;
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -307,6 +324,7 @@ app.post('/admin/rematch', async (req, res) => {
     res.json({ success: successCount, failed: moviesToRematch.length - successCount });
 });
 
+// R4: Admin endpoint for manual linking movies
 app.post('/admin/manual-link', async (req, res) => {
     const { id, imdbId } = req.body;
     if (!id || !imdbId) {
