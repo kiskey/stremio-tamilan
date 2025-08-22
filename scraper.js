@@ -3,6 +3,7 @@ import * as cheerio from 'cheerio';
 import debug from 'debug';
 import db from './database.js';
 import tmdb from './tmdb.js';
+import sessionManager from './session.js'; // R16: Import the new session manager
 
 const log = debug('addon:scraper');
 const scraperTargetUrl = process.env.SCRAPER_TARGET_URL || 'https://tamilan24.com/videos/latest';
@@ -15,7 +16,8 @@ async function scrapeMovieListPage(page = 1) {
   try {
     const { data } = await axios.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Cookie': sessionManager.getCookie() // R16.4: Use session cookie for list page requests
       },
       timeout: 15000
     });
@@ -40,9 +42,8 @@ async function scrapeMovieListPage(page = 1) {
         title = match[1].trim();
         year = parseInt(match[2], 10);
       } else {
-        // Fallback for titles without a year in the alt text
         title = altText.trim();
-        year = null; // Or consider a default/current year if applicable, but null is safer for TMDB search
+        year = null;
         log('Warning: Could not parse year from alt text "%s" for movie "%s". Year set to NULL.', altText, title);
       }
 
@@ -56,45 +57,74 @@ async function scrapeMovieListPage(page = 1) {
   }
 }
 
-async function scrapeStreamUrl(moviePageUrl, retries = 2) {
+async function scrapeStreamUrl(moviePageUrl) {
   log('Scraping stream URL from detail page: %s', moviePageUrl);
-  try {
-    const { data } = await axios.get(moviePageUrl, {
+
+  const makeRequest = async () => {
+    return axios.get(moviePageUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Referer': scraperTargetUrl
+        'Referer': scraperTargetUrl,
+        'Cookie': sessionManager.getCookie() // R16.4: Use session cookie for detail page requests
       },
       timeout: 15000
     });
-    const $ = cheerio.load(data);
-    const videoUrl = $('div.player-video source').attr('src');
-    const quality = $('div.player-video source').attr('data-quality') || 'HD';
+  };
 
+  try {
+    let response = await makeRequest();
+    let $ = cheerio.load(response.data);
+    let videoUrl = $('div.player-video source').attr('src');
+
+    // R16.5: Handle session expiry and re-login by checking for the video URL
     if (!videoUrl) {
-      log('No video URL found on detail page: %s', moviePageUrl);
+      log('No video URL found on first attempt for %s. Assuming session expired, attempting re-login.', moviePageUrl);
+      const loginSuccess = await sessionManager.login();
+      if (loginSuccess) {
+        log('Re-login successful. Retrying scrape for %s with new cookie.', moviePageUrl);
+        response = await makeRequest(); // Retry request with the new cookie
+        $ = cheerio.load(response.data);
+        videoUrl = $('div.player-video source').attr('src');
+      } else {
+        log('Re-login failed. Cannot scrape stream URL for %s.', moviePageUrl);
+        return null;
+      }
+    }
+    
+    // Final check after potential retry
+    if (!videoUrl) {
+      log('No video URL found on detail page even after re-login attempt: %s', moviePageUrl);
       return null;
     }
 
+    const quality = $('div.player-video source').attr('data-quality') || 'HD';
     const description = $('.post-description-box p').text().trim() || 'No description available.';
     const genre = $('.post-genres a').map((i, el) => $(el).text()).get().join(', ') || 'General';
 
     log('Successfully scraped stream and details for %s. Video URL found, quality: %s', moviePageUrl, quality);
     return { video_url: videoUrl, quality, description, genre };
   } catch (error) {
-    log('Error scraping %s: %s. Retries left: %d', moviePageUrl, error.message, retries);
-    if (retries > 0) {
-      await delay(2000);
-      return scrapeStreamUrl(moviePageUrl, retries - 1);
-    } else {
-      console.error(`Failed to scrape ${moviePageUrl} after multiple retries.`);
-      return null;
+    console.error(`Failed to scrape ${moviePageUrl} due to an error: %s`, error.message);
+    if (error.response) {
+      log('Scrape error response status: %d', error.response.status);
     }
+    return null;
   }
 }
 
-// R5, R11: Main scraper function
+// R5, R11, R16: Main scraper function
 export async function runScraper() {
   log('Starting scraper run...');
+
+  // R16: Attempt initial login before starting any scraping.
+  if (!sessionManager.isInitialized) {
+      const loggedIn = await sessionManager.login();
+      if (!loggedIn) {
+          log('Initial login failed. Aborting scraper run. Please check SCRAPER_USERNAME and SCRAPER_PASSWORD.');
+          return;
+      }
+  }
+
   const isFullScrape = process.env.SCRAPE_MODE === 'full';
   
   const processPage = async (page) => {
@@ -106,38 +136,31 @@ export async function runScraper() {
 
     for (const movie of moviesFromList) {
       let existingMovie = null;
-      if (movie.year) { // Only check for existing if we have a valid year
+      if (movie.year) {
         existingMovie = await db.getMovieByTitleAndYear(movie.title, movie.year);
       } else {
         log('Skipping existing movie check for "%s" due to missing year.', movie.title);
       }
 
-      // R11: Smarter handling of existing movies based on IMDb ID presence
       if (existingMovie && existingMovie.imdb_id) {
         log('Movie "%s (%s)" (ID: %d) already linked with IMDb ID: %s. Skipping detailed scrape/TMDB lookup.', 
             movie.title, movie.year, existingMovie.id, existingMovie.imdb_id);
-        if (!isFullScrape) { // In incremental mode, skip movies that are already fully linked
+        if (!isFullScrape) {
           continue; 
         }
-        // In full scrape mode, we might want to refresh metadata even if linked, 
-        // but for now, let's keep the existing behavior of updating metadata for existing entries.
-        // The addMovieAndStream will handle updates if it proceeds.
       } else if (existingMovie && !existingMovie.imdb_id) {
         log('Movie "%s (%s)" (ID: %d) exists but is UNLINKED. Attempting to fetch stream and TMDB metadata.', 
             movie.title, movie.year, existingMovie.id);
-        // Continue to scrape details and TMDB lookup
       } else {
         log('New movie "%s (%s)" found. Proceeding with detailed scrape and TMDB metadata.', movie.title, movie.year || 'N/A');
-        // Continue to scrape details and TMDB lookup
       }
       
-      await delay(1000 + Math.random() * 1000); // R5: Delay between requests
+      await delay(1000 + Math.random() * 1000);
 
       const streamDetails = await scrapeStreamUrl(movie.moviePageUrl);
       if (streamDetails && streamDetails.video_url) {
         let finalMovieData = { ...movie, ...streamDetails };
 
-        // R6, R11: TMDB lookup for metadata enrichment
         log('Attempting TMDB lookup for "%s (%s)"...', finalMovieData.title, finalMovieData.year || 'N/A');
         const tmdbData = await tmdb.searchMovie(finalMovieData.title, finalMovieData.year);
 
@@ -153,7 +176,7 @@ export async function runScraper() {
         } else {
             log('TMDB FAILED to find valid IMDb ID for "%s (%s)". Using scraped data only. IMDb ID will be NULL.', 
                 finalMovieData.title, finalMovieData.year || 'N/A');
-            finalMovieData.imdb_id = null; // Ensure it's explicitly null if TMDB fails to link
+            finalMovieData.imdb_id = null;
             finalMovieData.tmdb_id = null;
         }
         await db.addMovieAndStream(finalMovieData);
@@ -163,7 +186,7 @@ export async function runScraper() {
         log('Skipping movie "%s (%s)" due to no stream URL found after detail page scrape.', movie.title, movie.year);
       }
     }
-    return true; // Indicate that movies were processed, continue to next page if full scrape
+    return true;
   };
 
   if (isFullScrape) {
@@ -171,12 +194,12 @@ export async function runScraper() {
     let page = 1;
     while (await processPage(page)) {
       page++;
-      await delay(2000); // R5: Delay between pages
+      await delay(2000);
     }
     log('Full scrape finished.');
   } else {
     log('Incremental scrape mode. Scraping first page only...');
-    await processPage(1); // Process only the first page for incremental
+    await processPage(1);
     log('Incremental scrape finished.');
   }
 }
