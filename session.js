@@ -36,7 +36,7 @@ class SessionManager {
     }
 
     /**
-     * R16.1, R16.2, R16.3: Performs login to the target site.
+     * R16.1, R16.2, R16.3, R17: Performs login to the target site, handling the two-step 302 redirect.
      * @returns {Promise<boolean>} True if login was successful, false otherwise.
      */
     async login() {
@@ -52,38 +52,63 @@ class SessionManager {
         params.append('password', PASSWORD);
 
         try {
-            const response = await axios.post(LOGIN_URL, params, {
+            // R17: Step 1 - POST the login form. Expect a 302 redirect.
+            const postResponse = await axios.post(LOGIN_URL, params, {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                     'Referer': LOGIN_URL,
                 },
-                maxRedirects: 0, // We must not follow redirects to capture the 'set-cookie' header
-                validateStatus: function (status) {
-                    return status >= 200 && status < 400; // Accept success (200) and redirect (3xx) statuses
-                },
+                maxRedirects: 0, // We manually handle redirects
+                validateStatus: (status) => status === 302, // A 302 is a successful POST
             });
 
-            const setCookieHeader = response.headers['set-cookie'];
-            if (setCookieHeader) {
-                // R16.3: Find the specific user_id cookie which indicates a successful session.
-                const userIdCookie = setCookieHeader.find(c => c.startsWith('user_id='));
-                if (userIdCookie) {
-                    this._cookie = userIdCookie.split(';')[0]; // Extract just the 'key=value' part.
-                    log('Login successful. Session cookie captured: %s', this._cookie);
-                    this.isInitialized = true;
-                    return true;
-                }
+            const cookiesFromPost = postResponse.headers['set-cookie'] || [];
+            const firstRedirectLocation = postResponse.headers['location'];
+
+            if (!firstRedirectLocation) {
+                log('Login Step 1 FAILED: Did not receive a "location" header for redirect after POST. Check credentials or site logic.');
+                return false;
             }
+            log('Login Step 1 OK: Received 302 redirect to %s', firstRedirectLocation);
             
-            log('Login failed. Could not find user_id cookie in response headers. Response status: %d. This may be due to incorrect credentials.', response.status);
-            this._cookie = null;
-            return false;
+            // R17: Step 2 - Follow the first redirect. Expect another 302 with the final session cookie.
+            const getResponse = await axios.get(firstRedirectLocation, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Referer': LOGIN_URL,
+                    // Pass along any cookies we received from the first step
+                    'Cookie': cookiesFromPost.map(c => c.split(';')[0]).join('; '),
+                },
+                maxRedirects: 0,
+                validateStatus: (status) => status === 302, // The user_id is set on this 302
+            });
+
+            const cookiesFromGet = getResponse.headers['set-cookie'] || [];
+            if (cookiesFromGet.length === 0) {
+                 log('Login Step 2 FAILED: The second redirect did not return a "set-cookie" header.');
+                 return false;
+            }
+            log('Login Step 2 OK: Received second 302 redirect and "set-cookie" header.');
+
+            // R17: The final session cookie is in the headers of the *second* response.
+            const userIdCookie = cookiesFromGet.find(c => c.startsWith('user_id='));
+
+            if (userIdCookie) {
+                this._cookie = userIdCookie.split(';')[0]; // Extract just the 'key=value' part.
+                log('Login SUCCESS. Session cookie captured: %s', this._cookie);
+                this.isInitialized = true;
+                return true;
+            } else {
+                log('Login FAILED: "user_id" cookie was not found in the final redirect response headers.');
+                this._cookie = null;
+                return false;
+            }
 
         } catch (error) {
-            log('An error occurred during login: %s', error.message);
+            log('An unexpected error occurred during the login process: %s', error.message);
             if (error.response) {
-                log('Login error response status: %d, data: %o', error.response.status, error.response.data);
+                log('Login error response status: %d. Headers: %o', error.response.status, error.response.headers);
             }
             this._cookie = null;
             return false;
