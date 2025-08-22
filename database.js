@@ -1,7 +1,7 @@
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import path from 'path';
-import { fileURLToPath } = from 'url';
+import { fileURLToPath } from 'url';
 import debug from 'debug';
 import fs from 'fs';
 
