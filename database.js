@@ -1,7 +1,7 @@
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath } = from 'url';
 import debug from 'debug';
 import fs from 'fs';
 
@@ -16,7 +16,7 @@ if (!fs.existsSync(dataDir)) {
 const dbPath = path.join(dataDir, 'database.sqlite');
 
 class Database {
-  // ... constructor, init, createTables, movieExists, addMovieAndStream, updateMovieMetadata remain the same ...
+  // R1: Constructor for singleton pattern
   constructor() {
     if (Database.instance) {
       return Database.instance;
@@ -25,6 +25,7 @@ class Database {
     Database.instance = this;
   }
 
+  // R1: Initializes the database connection and creates tables
   async init() {
     if (this.db) {
       return;
@@ -42,6 +43,7 @@ class Database {
     }
   }
 
+  // R1: Creates necessary tables if they don't exist
   async createTables() {
     const createMoviesTableQuery = `
       CREATE TABLE IF NOT EXISTS movies (
@@ -85,28 +87,43 @@ class Database {
     log('Sort index for movies table created or already exists.');
   }
 
-  async movieExists(title, year) {
-    const query = 'SELECT 1 FROM movies WHERE title = ? AND year = ? LIMIT 1';
+  // R10: New method to get a movie's full data by title and year
+  async getMovieByTitleAndYear(title, year) {
+    const query = 'SELECT id, title, year, imdb_id FROM movies WHERE title = ? AND year = ? LIMIT 1';
     const result = await this.db.get(query, [title, year]);
-    return !!result;
+    if (result) {
+      log('Found existing movie in DB by title/year: %s (%s) with ID: %d, IMDb ID: %s', title, year, result.id, result.imdb_id || 'NULL');
+    }
+    return result;
   }
 
+  // R2, R12: Adds a new movie and stream, or updates existing movie metadata
   async addMovieAndStream(movie) {
-    const findMovieQuery = 'SELECT id FROM movies WHERE title = ? AND year = ?';
+    const findMovieQuery = 'SELECT id, imdb_id FROM movies WHERE title = ? AND year = ?';
     let existingMovie = await this.db.get(findMovieQuery, [movie.title, movie.year]);
 
     let movieId;
     if (existingMovie) {
       movieId = existingMovie.id;
+      log('Found existing movie "%s (%s)". ID: %d. Current IMDb ID: %s. Attempting to update metadata.', 
+          movie.title, movie.year, movieId, existingMovie.imdb_id || 'NULL');
+      
+      // R12: Log the proposed metadata update for an existing movie
+      log('Updating metadata for movie ID %d: imdb_id=%s, tmdb_id=%s, description=%s, genre=%s, rating=%s, poster=%s',
+          movieId, movie.imdb_id || 'NULL', movie.tmdb_id || 'NULL', movie.description?.substring(0, 50) + '...', 
+          movie.genre, movie.rating, movie.poster?.substring(0, 50) + '...');
+
       await this.updateMovieMetadata(movieId, {
+          imdb_id: movie.imdb_id,
+          tmdb_id: movie.tmdb_id,
           poster: movie.poster,
           description: movie.description,
           genre: movie.genre,
-          rating: movie.rating,
-          imdb_id: movie.imdb_id,
-          tmdb_id: movie.tmdb_id
+          rating: movie.rating
       });
-      log('Found existing movie "%s (%s)". ID: %d. Updating metadata.', movie.title, movie.year, movieId);
+      // After update, re-fetch to see final state of imdb_id
+      const updatedMovie = await this.db.get(findMovieQuery, [movie.title, movie.year]);
+      log('Metadata update for "%s (%s)" complete. Final IMDb ID: %s', movie.title, movie.year, updatedMovie.imdb_id || 'NULL');
     } else {
       const insertMovieQuery = `
         INSERT INTO movies (title, year, imdb_id, tmdb_id, genre, rating, poster, description, runtime, language)
@@ -117,7 +134,7 @@ class Database {
         movie.rating, movie.poster, movie.description, movie.runtime, movie.language
       ]);
       movieId = result.lastID;
-      log('Inserted new movie "%s (%s)". ID: %d', movie.title, movie.year, movieId);
+      log('Inserted new movie "%s (%s)". ID: %d, IMDb ID: %s', movie.title, movie.year, movieId, movie.imdb_id || 'NULL');
     }
 
     if (movieId && movie.video_url) {
@@ -128,12 +145,19 @@ class Database {
       `;
       const streamResult = await this.db.run(insertStreamQuery, [movieId, streamTitle, movie.video_url, movie.quality]);
       if (streamResult.changes > 0) {
-        log('Added new stream for movie ID %d: %s', movieId, movie.video_url);
+        log('Added new stream for movie ID %d: %s (Quality: %s)', movieId, movie.video_url, movie.quality);
+      } else {
+        log('Stream already exists for movie ID %d: %s', movieId, movie.video_url);
       }
     }
   }
   
+  // R2, R12: Updates specific metadata fields for a movie
   async updateMovieMetadata(id, { imdb_id, tmdb_id, genre, rating, description, poster }) {
+    // R12: Log values being passed to COALESCE
+    log('Executing updateMovieMetadata for ID %d with imdb_id: %s, tmdb_id: %s, genre: %s, rating: %s, description: %s, poster: %s',
+        id, imdb_id || 'NULL', tmdb_id || 'NULL', genre || 'NULL', rating || 'NULL', 
+        description?.substring(0, 50) + '...' || 'NULL', poster?.substring(0, 50) + '...' || 'NULL');
     const query = `
       UPDATE movies 
       SET 
@@ -148,48 +172,56 @@ class Database {
     return this.db.run(query, [imdb_id, tmdb_id, genre, rating, description, poster, id]);
   }
 
+  // R3: Retrieves movies for the catalog
   async getMovies(limit = 100, skip = 0) {
     const query = 'SELECT * FROM movies WHERE imdb_id IS NOT NULL ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
     return this.db.all(query, [limit, skip]);
   }
   
+  // R3: Searches movies for the catalog
   async searchMovies(searchTerm, limit = 100, skip = 0) {
     const query = 'SELECT * FROM movies WHERE title LIKE ? AND imdb_id IS NOT NULL ORDER BY year DESC, created_at DESC LIMIT ? OFFSET ?';
     return this.db.all(query, [`%${searchTerm}%`, limit, skip]);
   }
 
+  // R4: Retrieves overall statistics for the admin dashboard
   async getStats() {
     const query = `SELECT COUNT(*) AS total, COUNT(imdb_id) AS linked, (COUNT(*) - COUNT(imdb_id)) as unlinked FROM movies`;
     return this.db.get(query);
   }
 
-  // R53: Modify to accept limit and skip for pagination.
+  // R4, R7: Retrieves unlinked movies for the admin dashboard
   async getUnlinkedMovies(limit = 50, skip = 0) {
     const query = 'SELECT id, title, year, created_at FROM movies WHERE imdb_id IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?';
     return this.db.all(query, [limit, skip]);
   }
 
+  // R4: Retrieves specific unlinked movies by IDs
   async getUnlinkedMoviesByIds(ids) {
     const placeholders = ids.map(() => '?').join(',');
     const query = `SELECT id, title, year FROM movies WHERE id IN (${placeholders}) AND imdb_id IS NULL`;
     return this.db.all(query, ids);
   }
 
+  // R3: Retrieves a single movie by its internal ID
   async getMovieById(id) {
     const query = 'SELECT * FROM movies WHERE id = ?';
     return this.db.get(query, [id]);
   }
 
+  // R3: Retrieves a single movie by its IMDb ID
   async getMovieByImdbId(imdbId) {
     const query = 'SELECT * FROM movies WHERE imdb_id = ?';
     return this.db.get(query, [imdbId]);
   }
 
+  // R3: Retrieves streams for a given movie ID
   async getStreamsForMovieId(movieId) {
     const query = 'SELECT * FROM streams WHERE movie_id = ?';
     return this.db.all(query, [movieId]);
   }
   
+  // R1: Closes the database connection
   async close() {
     if (this.db) {
       await this.db.close();
